@@ -505,12 +505,15 @@ struct Emulator : vterm::ScreenCallbacks {
 |--------|-------------|
 | `set_callbacks(cb)` / `clear_callbacks()` | Register/unregister `StateCallbacks` (pass by reference) |
 | `set_fallbacks(fb)` / `clear_fallbacks()` | Register/unregister `StateFallbacks` for unrecognised sequences |
+| `enable_premove()` | Enable delivery of `on_premove()` callbacks |
 | `reset(hard)` | Reset terminal state |
 | `cursor_pos()` | Current cursor `Pos` |
 | `get_penattr(attr, val)` | Read current pen attribute |
 | `get_lineinfo(row)` | Double-width/height flags for a row (returns `const LineInfo&`) |
-| `get_default_colors(fg, bg)` / `set_default_colors(fg, bg)` | Default colors |
-| `get_palette_color(idx, col)` / `set_palette_color(idx, col)` | 256-color palette |
+| `get_default_colors()` | Returns `ColorPair{fg, bg}` with current defaults |
+| `set_default_colors(fg, bg)` | Set default foreground and background colors |
+| `get_palette_color(idx)` | Returns `Color` for palette index (0-255) |
+| `set_palette_color(idx, col)` | Set palette color at index |
 | `set_bold_highbright(bool)` | Map bold to bright ANSI colors |
 | `convert_color_to_rgb(col)` | Resolve indexed/default to RGB |
 | `set_termprop(prop, val)` | Set a terminal property |
@@ -561,11 +564,9 @@ libvtermcpp/
     keyboard.cpp     Keyboard input → escape sequence generation
     mouse.cpp        Mouse input → escape sequence generation
   test/
-    harness.h        Test framework and helpers
-    test_*.cpp       630 tests
+    test.h           Zero-dependency single-header test framework
+    harness.h        Test helpers and assertion macros
+    main.cpp         Test entry point
+    test_*.cpp       92 files, 630 tests
   CMakeLists.txt
 ```
-
-## Origin
-
-libvtermcpp is a C++20 port of [libvterm](http://www.leonerd.org.uk/code/libvterm/) by Paul Evans. The C API (function-pointer tables, manual memory management) has been converted to C++ classes and RAII, the test suite has been ported to a lightweight C++ test framework, and the codebase has been incrementally modernised across multiple passes (enum class, constexpr, span, string_view, references, templates).
