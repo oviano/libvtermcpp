@@ -25,6 +25,28 @@ Key design decisions:
 - **No allocator customisation.** Uses standard `std::vector` and `std::unique_ptr` internally.
 - **Value semantics where practical.** `Pos`, `Rect`, `Color`, `ScreenCell` are plain value types. `Terminal` is move-only.
 
+## New features
+
+### Built-in scrollback
+
+libvtermcpp adds optional built-in scrollback storage that the original libvterm did not have. When enabled, the library manages scrollback internally — storing lines that scroll off the top of the screen, reflowing them on resize, and handling resize compensation (erasing orphaned duplicates when the terminal grows back after a shrink).
+
+```cpp
+vterm::Terminal vt(25, 80);
+vterm::Scrollback& sb = vt.scrollback();
+sb.set_capacity(10000);  // max lines to retain (0 = disabled, the default)
+
+// Lines that scroll off screen are stored automatically.
+// Read scrollback content:
+for (size_t i = 0; i < sb.size(); i++) {
+    const auto& line = sb.line(i);  // 0 = oldest
+    // line.cells — vector of ScreenCell
+    // line.continuation — true if this is a continuation of the previous logical line
+}
+```
+
+Scrollback is disabled by default (capacity=0). When disabled, the library behaves exactly as before — scrollback is delegated entirely to the application via `ScreenCallbacks::on_sb_pushline`/`on_sb_popline`. When enabled, both the built-in storage and the callbacks fire, so applications can use the built-in storage while still observing scrollback events.
+
 ## C++ features used
 
 - **C++20 required** (`std::span`, `std::format`, `std::string_view`, designated initialisers, `std::to_array`)
@@ -74,7 +96,7 @@ A static library (`libvtermcpp.a` / `vtermcpp.lib`). No shared library option is
 
 ## Testing
 
-The test suite contains 630 tests covering parser behaviour, state management, screen operations, and full vttest sequences. Some were ported from upstream libvterm; the rest were written from the terminal specs.
+The test suite contains 649 tests covering parser behaviour, state management, screen operations, scrollback storage/reflow, and full vttest sequences. Some were ported from upstream libvterm; the rest were written from the terminal specs. The scrollback stress tests use golden output files to verify deterministic behaviour across resize sequences.
 
 ```bash
 # Standard build + test
@@ -350,10 +372,10 @@ screen.get_attrs_extent(extent, pos,
 
 struct Emulator : vterm::ScreenCallbacks {
     vterm::Terminal vt;
-    std::vector<std::vector<vterm::ScreenCell>> scrollback;
 
     Emulator(int rows, int cols) : vt(rows, cols) {
         vt.set_utf8(true);
+        vt.scrollback().set_capacity(10000);
         vt.screen().set_callbacks(*this);
         vt.screen().enable_altscreen(true);
         vt.screen().enable_reflow(true);
@@ -423,19 +445,8 @@ struct Emulator : vterm::ScreenCallbacks {
         return true;
     }
 
-    bool on_sb_pushline(std::span<const vterm::ScreenCell> cells, bool) override {
-        scrollback.emplace_back(cells.begin(), cells.end());
-        return true;
-    }
-
-    bool on_sb_popline(std::span<vterm::ScreenCell> cells, bool& cont) override {
-        if (scrollback.empty()) return false;
-        auto& line = scrollback.back();
-        std::copy_n(line.begin(), std::min(line.size(), cells.size()), cells.begin());
-        cont = false;
-        scrollback.pop_back();
-        return true;
-    }
+    // Scrollback is handled by the built-in Scrollback class.
+    // Access via vt.scrollback().line(i) for rendering.
 
     // Stubs — your application provides these
     void send_to_pty(std::span<const char> data);
@@ -495,7 +506,7 @@ struct Emulator : vterm::ScreenCallbacks {
 | `keyboard_start_paste()` / `keyboard_end_paste()` | Bracketed paste markers |
 | `mouse_move(row, col, mod)` | Report mouse movement |
 | `mouse_button(btn, pressed, mod)` | Report mouse button (1-based) |
-| `state()` / `screen()` | Access State and Screen by reference |
+| `state()` / `screen()` / `scrollback()` | Access State, Screen, and Scrollback by reference |
 | `parser_set_callbacks(cb)` | Low-level parser event hooks (pass by reference) |
 | `parser_clear_callbacks()` | Unregister parser callbacks |
 
@@ -540,6 +551,17 @@ struct Emulator : vterm::ScreenCallbacks {
 | `convert_color_to_rgb(col)` | Resolve indexed/default to RGB |
 | `set_default_colors(fg, bg)` | Update default colors and refresh cells |
 
+### Scrollback
+
+| Method | Description |
+|--------|-------------|
+| `set_capacity(n)` | Set maximum number of stored lines (0 = disabled) |
+| `capacity()` | Current capacity |
+| `size()` | Number of stored lines |
+| `empty()` | True if no stored lines |
+| `line(index)` | Access line by index (0 = oldest, size()-1 = newest). Returns `const Line&` with `.cells` and `.continuation` |
+| `clear()` | Remove all stored lines |
+
 ## Project structure
 
 ```
@@ -551,8 +573,10 @@ libvtermcpp/
     terminal.h       Terminal class
     state.h          State class
     screen.h         Screen class
+    scrollback.h     Scrollback class
   src/
     internal.h       Internal types (Pen, C1, parser state, Impl structs)
+    scrollback_impl.h  Scrollback::Impl definition
     utf8.h           UTF-8 encoding helpers
     terminal.cpp     Terminal construction, output, write
     parser.cpp       VT escape sequence parser
@@ -561,12 +585,14 @@ libvtermcpp/
     pen.cpp          Pen attribute handling (SGR)
     state.cpp        State machine (cursor, modes, CSI/OSC/DCS dispatch)
     screen.cpp       Screen buffer, damage tracking, resize/reflow
+    scrollback.cpp   Scrollback storage, reflow, resize compensation
     keyboard.cpp     Keyboard input → escape sequence generation
     mouse.cpp        Mouse input → escape sequence generation
   test/
     test.h           Zero-dependency single-header test framework
     harness.h        Test helpers and assertion macros
     main.cpp         Test entry point
-    test_*.cpp       92 files, 630 tests
+    golden/          Golden output files for scrollback stress tests
+    test_*.cpp       93 files, 649 tests
   CMakeLists.txt
 ```

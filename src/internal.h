@@ -2,6 +2,7 @@
 #define VTERM_INTERNAL_H
 
 #include "vterm/vterm.h"
+#include "scrollback_impl.h"
 
 #include <algorithm>
 #include <array>
@@ -439,9 +440,13 @@ struct Terminal::Impl {
     std::unique_ptr<State::Impl> state;
     std::unique_ptr<Screen::Impl> screen;
 
-    // Wrapper objects returned by Terminal::state() / Terminal::screen()
+    // Wrapper objects returned by Terminal::state() / Terminal::screen() / Terminal::scrollback()
     State  state_wrapper;
     Screen screen_wrapper;
+    Scrollback scrollback_wrapper;
+
+    // Scrollback storage (owned here; Scrollback wrapper gets a non-owning pointer)
+    std::unique_ptr<Scrollback::Impl> scrollback_impl;
 
     // Output
     void push_output_bytes(std::span<const char> bytes);

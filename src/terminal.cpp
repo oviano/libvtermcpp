@@ -34,12 +34,22 @@ void Terminal::set_size(int32_t rows, int32_t cols) {
     if(rows < 1 || cols < 1)
         return;
 
+    int32_t old_rows = impl_->rows;
+    int32_t old_cols = impl_->cols;
+
+    auto* sb = impl_->scrollback_impl.get();
+    if(sb && sb->capacity > 0)
+        sb->begin_resize();
+
     impl_->rows = rows;
     impl_->cols = cols;
 
     if(impl_->parser.callbacks && impl_->parser.callbacks->on_resize(rows, cols)) {
         // callback handled it
     }
+
+    if(sb && sb->capacity > 0)
+        sb->commit_resize(old_rows, rows, old_cols, cols);
 }
 
 bool Terminal::utf8() const { return impl_->mode.utf8; }
@@ -89,6 +99,13 @@ Screen& Terminal::screen() {
         impl_->obtain_screen();
     impl_->screen_wrapper.impl_ = impl_->screen.get();
     return impl_->screen_wrapper;
+}
+
+Scrollback& Terminal::scrollback() {
+    if(!impl_->scrollback_impl)
+        impl_->scrollback_impl = std::make_unique<Scrollback::Impl>();
+    impl_->scrollback_wrapper.impl_ = impl_->scrollback_impl.get();
+    return impl_->scrollback_wrapper;
 }
 
 void Terminal::parser_set_callbacks(ParserCallbacks& cb) {

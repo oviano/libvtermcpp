@@ -92,6 +92,7 @@ add_executable(libvtermcpp-test
     test_seq_tbc.cpp
     test_seq_vpa_vpr_vpb.cpp
     test_seq_xtversion.cpp
+    test_scrollback.cpp
 )
 
 target_link_libraries(libvtermcpp-test PRIVATE vtermcpp)
@@ -99,4 +100,8 @@ target_link_libraries(libvtermcpp-test PRIVATE vtermcpp)
 target_include_directories(libvtermcpp-test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+
+target_compile_definitions(libvtermcpp-test PRIVATE
+    TEST_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
 )

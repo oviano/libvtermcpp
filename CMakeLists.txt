@@ -13,6 +13,7 @@ add_library(vtermcpp STATIC
     src/pen.cpp
     src/state.cpp
     src/screen.cpp
+    src/scrollback.cpp
     src/keyboard.cpp
     src/mouse.cpp
 )

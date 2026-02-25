@@ -59,6 +59,8 @@ struct Screen::Impl {
 
     ScreenCallbacks* callbacks = nullptr;
 
+    [[nodiscard]] Scrollback::Impl* scrollback() const { return vt.scrollback_impl.get(); }
+
     DamageSize damage_merge = DamageSize::Cell;
     // start_row == no_damage_row => no damage
     Rect damaged;
@@ -301,7 +303,10 @@ void Screen::Impl::sb_pushline_from_row(int32_t row, bool continuation) {
     for(pos.col = 0; pos.col < cols; pos.col++)
         (void)get_cell_impl(pos, sb_buffer[pos.col]);
 
-    callbacks->on_sb_pushline(sb_buffer, continuation);
+    if(scrollback() && scrollback()->capacity > 0)
+        scrollback()->push_line(sb_buffer, continuation);
+    if(callbacks)
+        callbacks->on_sb_pushline(sb_buffer, continuation);
 }
 
 // StateCallbacks subclass that routes state callbacks to screen logic
@@ -338,7 +343,9 @@ struct ScreenStateCallbacks : public StateCallbacks {
     }
 
     bool on_premove(Rect rect) override {
-        if(screen.callbacks &&
+        bool has_sink = screen.callbacks ||
+                        (screen.scrollback() && screen.scrollback()->capacity > 0);
+        if(has_sink &&
            rect.start_row == 0 && rect.start_col == 0 &&
            rect.end_col == screen.cols &&
            screen.buffer_idx == bufidx_primary) {
@@ -520,6 +527,8 @@ struct ScreenStateCallbacks : public StateCallbacks {
     }
 
     bool on_sb_clear() override {
+        if(screen.scrollback() && screen.scrollback()->capacity > 0)
+            screen.scrollback()->clear();
         if(screen.callbacks)
             if(screen.callbacks->on_sb_clear())
                 return true;
@@ -790,7 +799,8 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
 
     if(old_row >= 0 && bufidx == bufidx_primary) {
         // Push spare lines to scrollback buffer
-        if(callbacks) {
+        bool has_sink = callbacks || (scrollback() && scrollback()->capacity > 0);
+        if(has_sink) {
             int32_t saved_buffer_idx = buffer_idx;
             buffer_idx = bufidx;
             for(int32_t row = 0; row <= old_row; row++) {
@@ -803,7 +813,23 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
             statefields.pos.row -= (old_row + 1);
     }
 
-    if(new_row >= 0 && bufidx == bufidx_primary && callbacks) {
+    // Helper lambdas for pop/pushback that try internal scrollback first, then callbacks
+    bool has_pop_source = (scrollback() && scrollback()->capacity > 0) || callbacks;
+    auto do_popline = [this](std::span<ScreenCell> cells, bool& cont) -> bool {
+        if(scrollback() && scrollback()->capacity > 0)
+            return scrollback()->pop_line(cells, cont);
+        if(callbacks)
+            return callbacks->on_sb_popline(cells, cont);
+        return false;
+    };
+    auto do_pushback = [this](std::span<const ScreenCell> cells, bool cont) {
+        if(scrollback() && scrollback()->capacity > 0)
+            scrollback()->push_line(cells, cont);
+        if(callbacks)
+            callbacks->on_sb_pushline(cells, cont);
+    };
+
+    if(new_row >= 0 && bufidx == bufidx_primary && has_pop_source) {
         if(reflow) {
             // Reflow-aware backfill: pop complete logical lines from scrollback,
             // join continuation segments, and re-split at new column width
@@ -816,7 +842,7 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
                 int32_t total_segs = 0;
                 bool cont = false;
 
-                bool popresult = callbacks->on_sb_popline(
+                bool popresult = do_popline(
                     std::span(sb_buffer).first(static_cast<size_t>(old_cols)), cont);
                 if(!popresult)
                     break;
@@ -830,7 +856,7 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
 
                 // If this segment is a continuation, keep popping to find the start
                 while(cont) {
-                    popresult = callbacks->on_sb_popline(
+                    popresult = do_popline(
                         std::span(sb_buffer).first(static_cast<size_t>(old_cols)), cont);
                     if(!popresult)
                         break;
@@ -873,7 +899,7 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
                 if(new_row - new_height + 1 < 0) {
                     // Not enough space - push the logical line back to scrollback
                     for(int32_t seg = 0; seg < total_segs; seg++)
-                        callbacks->on_sb_pushline(
+                        do_pushback(
                             std::span(logical_cells).subspan(static_cast<size_t>(seg * old_cols), static_cast<size_t>(old_cols)),
                             seg > 0);
                     break;
@@ -926,7 +952,7 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
             // Non-reflow backfill (original path for sb_popline without reflow)
             while(new_row >= 0) {
                 bool continuation = false;
-                bool popresult = callbacks->on_sb_popline(
+                bool popresult = do_popline(
                     std::span(sb_buffer).first(static_cast<size_t>(old_cols)), continuation);
                 if(!popresult)
                     break;

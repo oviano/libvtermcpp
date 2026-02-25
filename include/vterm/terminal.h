@@ -11,6 +11,7 @@ namespace vterm {
 
 class State;
 class Screen;
+class Scrollback;
 
 class Terminal {
 public:
@@ -43,6 +44,7 @@ public:
 
     State& state();
     Screen& screen();
+    Scrollback& scrollback();
 
     void parser_set_callbacks(ParserCallbacks& cb);
     void parser_clear_callbacks();

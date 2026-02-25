@@ -6,5 +6,6 @@
 #include "terminal.h"
 #include "state.h"
 #include "screen.h"
+#include "scrollback.h"
 
 #endif // VTERM_H
