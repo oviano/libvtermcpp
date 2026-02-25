@@ -871,7 +871,7 @@ struct TestScreenCallbacksScrollbackReflow : TestScreenCallbacks {
             auto& line = g_scrollback[g_scrollback_count];
             int32_t n = cols < SCROLLBACK_COLS_MAX ? cols : SCROLLBACK_COLS_MAX;
             std::copy_n(cells.data(), n, line.cells.data());
-            line.cols = cols;
+            line.cols = n;
             line.continuation = continuation;
             g_scrollback_count++;
         }

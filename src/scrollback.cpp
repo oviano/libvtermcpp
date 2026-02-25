@@ -39,6 +39,7 @@ void Scrollback::Impl::clear() {
     lines.clear();
     push_track_start = 0;
     push_track_count = 0;
+    sb_before_resize = 0;
 }
 
 void Scrollback::Impl::reflow(int32_t new_cols) {
@@ -158,6 +159,8 @@ void Scrollback::Impl::commit_resize(int32_t old_rows, int32_t new_rows,
 void Scrollback::Impl::enforce_capacity() {
     while(capacity > 0 && lines.size() > capacity) {
         lines.pop_front();
+        if(sb_before_resize > 0)
+            sb_before_resize--;
         if(push_track_count > 0) {
             if(push_track_start > 0) {
                 push_track_start--;

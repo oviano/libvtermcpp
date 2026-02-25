@@ -436,9 +436,7 @@ struct ScreenStateCallbacks : public StateCallbacks {
             }
         }
         else {
-            DEBUG_LOG("TODO: Just flush and redo damaged=({},{}-{},{}) rect=({},{}-{},{})\n",
-                screen.damaged.start_row, screen.damaged.start_col, screen.damaged.end_row, screen.damaged.end_col,
-                rect.start_row, rect.start_col, rect.end_row, rect.end_col);
+            screen.damaged.expand(rect);
         }
 
         return true;
@@ -730,6 +728,7 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
                 if(new_cursor.col >= new_cols)
                     new_cursor.col = new_cols - 1;
             }
+            old_row = old_row_end;
             break;
         }
 
@@ -996,6 +995,8 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
             new_lineinfo.begin());
 
         new_cursor.row -= (new_row + 1);
+        if(new_cursor.row < 0)
+            new_cursor.row = 0;
 
         for(new_row = moverows; new_row < new_rows; new_row++) {
             for(int32_t col = 0; col < new_cols; col++)

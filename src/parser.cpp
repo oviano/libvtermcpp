@@ -144,7 +144,7 @@ size_t Terminal::Impl::input_write(std::span<const char> data) {
         bool c1_allowed = !mode.utf8;
 
         if(c == ctrl_nul || c == ctrl_del) { // NUL, DEL
-            if(is_string_state()) {
+            if(is_string_state() && string_start != no_string) {
                 string_fragment(data.subspan(string_start, pos - string_start), false);
                 string_start = pos + 1;
             }
@@ -174,7 +174,7 @@ size_t Terminal::Impl::input_write(std::span<const char> data) {
             if(parser.state == ParserState::SOS)
                 continue; // All other C0s permitted in SOS
 
-            if(is_string_state())
+            if(is_string_state() && string_start != no_string)
                 string_fragment(data.subspan(string_start, pos - string_start), false);
             do_control(c);
             if(is_string_state())
