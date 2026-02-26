@@ -77,8 +77,16 @@ void Scrollback::Impl::reflow(int32_t new_cols) {
             bool first = true;
 
             while(offset < logical_line.size()) {
-                const size_t chunk_size = std::min(static_cast<size_t>(new_cols),
-                                                   logical_line.size() - offset);
+                size_t chunk_size = std::min(static_cast<size_t>(new_cols),
+                                             logical_line.size() - offset);
+
+                // Don't split a double-width character across rows
+                if(chunk_size > 1 &&
+                   chunk_size == static_cast<size_t>(new_cols) &&
+                   offset + chunk_size < logical_line.size() &&
+                   logical_line[offset + chunk_size - 1].width > 1) {
+                    chunk_size--;
+                }
 
                 Line row;
                 row.cells.assign(logical_line.begin() + static_cast<ptrdiff_t>(offset),

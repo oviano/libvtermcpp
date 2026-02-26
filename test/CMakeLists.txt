@@ -43,6 +43,7 @@ add_executable(libvtermcpp-test
     test_90_vttest_02_screen_3.cpp
     test_90_vttest_02_screen_4.cpp
     test_92_regression.cpp
+    test_93_regression_review.cpp
     test_seq_c1_8bit.cpp
     test_seq_cha_hpa.cpp
     test_seq_cht_cbt.cpp

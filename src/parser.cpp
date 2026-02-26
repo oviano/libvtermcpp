@@ -380,7 +380,7 @@ size_t Terminal::Impl::input_write(std::span<const char> data) {
 
     if(string_start != no_string) {
         size_t string_len = pos - string_start;
-        if(parser.in_esc)
+        if(parser.in_esc && string_len > 0)
             string_len -= 1;
         string_fragment(data.subspan(string_start, string_len), false);
     }

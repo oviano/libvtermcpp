@@ -24,6 +24,7 @@ target_include_directories(vtermcpp
 )
 
 option(LIBVTERMCPP_BUILD_TESTS "Build tests" ON)
+
 if(LIBVTERMCPP_BUILD_TESTS)
     add_subdirectory(test)
 endif()

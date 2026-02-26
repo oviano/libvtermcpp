@@ -103,9 +103,9 @@ inline int test_run_all(int argc, char** argv)
         }
 
         total++;
+
         int32_t failures = 0;
         g_tests[i].fn(&failures);
-
         if (failures == 0) {
             passed++;
         } else {

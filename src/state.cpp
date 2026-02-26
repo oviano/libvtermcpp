@@ -1887,6 +1887,19 @@ bool State::Impl::on_resize(int32_t rows, int32_t cols)
             scrollregion_right = this->cols;
     }
 
+    // Reset scroll region if top/left are now beyond the new dimensions,
+    // or if clamping bottom/right made the region degenerate
+    if(scrollregion_top >= this->rows ||
+       (scrollregion_bottom != scrollregion_unset && scrollregion_bottom <= scrollregion_top)) {
+        scrollregion_top = 0;
+        scrollregion_bottom = scrollregion_unset;
+    }
+    if(scrollregion_left >= this->cols ||
+       (scrollregion_right != scrollregion_unset && scrollregion_right <= scrollregion_left)) {
+        scrollregion_left = 0;
+        scrollregion_right = scrollregion_unset;
+    }
+
     StateFields fields{};
     fields.pos = pos;
     fields.lineinfos[0] = &lineinfos[0];

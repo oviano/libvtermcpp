@@ -892,8 +892,24 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
                     }
                 }
 
-                int32_t new_height = total_width > 0
-                    ? (total_width + new_cols - 1) / new_cols : 1;
+                int32_t new_height;
+                if(total_width > 0) {
+                    // Simulate packing to account for double-width chars at row boundaries
+                    new_height = 0;
+                    int32_t tw = 0;
+                    while(tw < total_width) {
+                        int32_t chunk = std::min(new_cols, total_width - tw);
+                        if(chunk > 1 && chunk == new_cols && tw + chunk < total_width &&
+                           logical_cells[tw + chunk - 1].width == 2) {
+                            chunk--;
+                        }
+                        tw += chunk;
+                        new_height++;
+                    }
+                }
+                else {
+                    new_height = 1;
+                }
 
                 if(new_row - new_height + 1 < 0) {
                     // Not enough space - push the logical line back to scrollback
@@ -921,6 +937,13 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
                     for(pos.col = 0; count > 0; pos.col++, count--) {
                         ScreenCell& src = logical_cells[src_seg * old_cols + src_col];
                         InternalScreenCell& dst = new_buffer[pos.row * new_cols + pos.col];
+
+                        // Don't split a double-width character across rows
+                        if(src.width == 2 && pos.col == new_cols - 1 && new_cols > 1) {
+                            clearcell(dst);
+                            remaining += count;
+                            break;
+                        }
 
                         dst.chars = src.chars;
 
@@ -964,6 +987,13 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
                     if(w < 1) w = 1;
                     ScreenCell& src = sb_buffer[pos.col];
                     InternalScreenCell& dst = new_buffer[pos.row * new_cols + pos.col];
+
+                    // Don't place a double-width char at the last column where it won't fit
+                    if(src.width == 2 && pos.col == new_cols - 1) {
+                        clearcell(dst);
+                        pos.col += w;
+                        continue;
+                    }
 
                     dst.chars = src.chars;
 
