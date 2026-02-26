@@ -1,4 +1,4 @@
-// test_93_regression_review.cpp — regression tests for code review findings #1-20
+// test_93_regression_review.cpp — regression tests for code review findings #1-21
 //
 // Each test targets a specific bug found during review that was not caught by
 // the existing test suite. The bugs involve combinations of features that were
@@ -924,4 +924,46 @@ TEST(regression_clamp_doublewidth_narrow)
     pos = state.cursor_pos();
     ASSERT_TRUE(pos.row >= 0);
     ASSERT_TRUE(pos.col >= 0);
+}
+
+// ============================================================================
+// Group 14: DECSLRM clamp UB (#21)
+// ============================================================================
+
+// #21: DECSLRM validates scrollregion_right <= scrollregion_left only when
+// scrollregion_right is set. When right is unset and left >= cols, the clamp
+// at L1445 gets lo=cols > hi=cols-1 (UB). Triggered by CSI (cols+1) s with
+// DECLRMM and origin mode enabled.
+TEST(regression_decslrm_left_exceeds_cols)
+{
+    Terminal vt(25, 10);
+    vt.set_utf8(false);
+    State& state = vt.state();
+    state.set_callbacks(state_cbs);
+    state.reset(true);
+
+    // Enable left/right margin mode (DECLRMM)
+    push(vt, "\e[?69h");
+
+    // Set left margin to cols (11 in 1-based = col 10 in 0-based = cols).
+    // Right margin unset (only 1 arg). This should be detected as invalid
+    // and the margins reset to defaults (left=0, right=unset).
+    push(vt, "\e[11s");
+
+    // Enable origin mode — cursor clamping uses scroll region bounds
+    push(vt, "\e[?6h");
+
+    // CUP home — with fix, margins were reset so cursor goes to (0,0).
+    // Bug: scrollregion_left stays at 10 (= cols), origin mode adds it
+    // to the CUP position, and std::clamp(10, 10, 9) is UB. On this
+    // platform the UB produces col 9 — cursor stuck at right edge.
+    push(vt, "\e[1;1H");
+
+    Pos pos = state.cursor_pos();
+    ASSERT_EQ(pos.row, 0);
+    ASSERT_EQ(pos.col, 0);
+
+    // Clean up modes
+    push(vt, "\e[?6l");
+    push(vt, "\e[?69l");
 }

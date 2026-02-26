@@ -1390,8 +1390,8 @@ bool State::Impl::on_csi(std::string_view leader, std::span<const int64_t> args,
         else
             scrollregion_right = std::min(scrollregion_right, cols);
 
-        if(scrollregion_right != scrollregion_unset &&
-           scrollregion_right <= scrollregion_left) {
+        if((scrollregion_right != scrollregion_unset && scrollregion_right <= scrollregion_left) ||
+           scrollregion_left >= cols) {
             // Invalid
             scrollregion_left  = 0;
             scrollregion_right = scrollregion_unset;
