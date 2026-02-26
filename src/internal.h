@@ -12,6 +12,7 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -370,6 +371,9 @@ struct State::Impl {
     [[nodiscard]] bool on_control(uint8_t control);
     [[nodiscard]] bool on_escape(std::string_view bytes);
     [[nodiscard]] bool on_csi(std::string_view leader, std::span<const int64_t> args, std::string_view intermed, char command);
+    void on_csi_cursor(int32_t command, std::span<const int64_t> args, int32_t argcount);
+    void on_csi_edit(int32_t command, std::span<const int64_t> args);
+    [[nodiscard]] std::optional<bool> on_csi_erase(int32_t command, int32_t leader_byte, std::span<const int64_t> args);
     [[nodiscard]] bool on_osc(int32_t command, StringFragment frag);
     [[nodiscard]] bool on_dcs(std::string_view command, StringFragment frag);
     [[nodiscard]] bool on_apc(StringFragment frag);

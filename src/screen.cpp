@@ -627,6 +627,27 @@ namespace {
     return col + 1;
 }
 
+// Compute the number of rows needed to pack `total_width` cells into rows of
+// `new_cols`, accounting for double-width characters that can't be split across
+// row boundaries.  `is_wide_at_boundary(pos)` returns true when the character
+// ending at flat position `pos-1` is double-width (i.e. placing it as the last
+// cell of a row would split it).
+template<typename IsWideAtBoundary>
+[[nodiscard]] constexpr int32_t compute_packed_height(int32_t total_width, int32_t new_cols, IsWideAtBoundary is_wide_at_boundary) {
+    int32_t height = 0;
+    int32_t tw = 0;
+    while(tw < total_width) {
+        int32_t chunk = std::min(new_cols, total_width - tw);
+        if(chunk > 1 && chunk == new_cols && tw + chunk < total_width &&
+           is_wide_at_boundary(tw + chunk)) {
+            chunk--;
+        }
+        tw += chunk;
+        height++;
+    }
+    return height;
+}
+
 } // anonymous namespace
 
 void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_cols, bool active, StateFields& statefields) {
@@ -650,196 +671,180 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
         old_cols, old_rows, new_cols, new_rows, old_cursor.col, old_cursor.row);
 #endif
 
-    // Keep track of the final row that is known to be blank, so we know what
-    // spare space we have for scrolling into
     int32_t final_blank_row = new_rows;
 
-    while(old_row >= 0) {
-        int32_t old_row_end = old_row;
-        // TODO: Stop if dwl or dhl
-        while(reflow && old_row >= 0 && old_lineinfo_vec[old_row].continuation)
-            old_row--;
-        int32_t old_row_start = old_row;
-        if(old_row_start < 0)
-            old_row_start = 0;
+    // ---- Phase 1: Reflow old buffer content into new buffer ----
+    // Iterates old rows bottom-to-top, joining continuation rows into logical
+    // lines, computing packed height at new width, and copying cells into the
+    // new buffer while tracking cursor position.
 
-        int32_t width = 0;
-        for(int32_t row = old_row_start; row <= old_row_end; row++) {
-            if(reflow && row < (old_rows - 1) && old_lineinfo_vec[row + 1].continuation)
-                width += old_cols;
-            else
-                width += line_popcount(old_buffer, row, old_cols);
-        }
+    auto reflow_old_content = [&]() {
+        while(old_row >= 0) {
+            int32_t old_row_end = old_row;
+            // TODO: Stop if dwl or dhl
+            while(reflow && old_row >= 0 && old_lineinfo_vec[old_row].continuation)
+                old_row--;
+            int32_t old_row_start = old_row;
+            if(old_row_start < 0)
+                old_row_start = 0;
 
-        if(final_blank_row == (new_row + 1) && width == 0)
-            final_blank_row = new_row;
-
-        int32_t new_height;
-        if(reflow && width > 0) {
-            // Simulate packing to account for double-width chars at row boundaries.
-            // InternalScreenCell has no .width field, so we detect wide chars by
-            // checking if the next cell is a widechar_continuation marker
-            // (cf. backfill path which uses ScreenCell.width == 2).
-            new_height = 0;
-            int32_t tw = 0;
-            while(tw < width) {
-                int32_t chunk = std::min(new_cols, width - tw);
-                if(chunk > 1 && chunk == new_cols && tw + chunk < width) {
-                    int32_t p1 = tw + chunk;
-                    int32_t p1_row = old_row_start + p1 / old_cols;
-                    int32_t p1_col = p1 % old_cols;
-                    if(p1_row <= old_row_end &&
-                       old_buffer[p1_row * old_cols + p1_col].chars[0] == widechar_continuation) {
-                        chunk--;
-                    }
-                }
-                tw += chunk;
-                new_height++;
+            int32_t width = 0;
+            for(int32_t row = old_row_start; row <= old_row_end; row++) {
+                if(reflow && row < (old_rows - 1) && old_lineinfo_vec[row + 1].continuation)
+                    width += old_cols;
+                else
+                    width += line_popcount(old_buffer, row, old_cols);
             }
-        }
-        else {
-            new_height = 1;
-        }
 
-        int32_t new_row_end   = new_row;
-        int32_t new_row_start = new_row - new_height + 1;
+            if(final_blank_row == (new_row + 1) && width == 0)
+                final_blank_row = new_row;
 
-        old_row = old_row_start;
-        int32_t old_col = 0;
+            int32_t new_height;
+            if(reflow && width > 0) {
+                new_height = compute_packed_height(width, new_cols, [&](int32_t boundary_pos) {
+                    int32_t p_row = old_row_start + boundary_pos / old_cols;
+                    int32_t p_col = boundary_pos % old_cols;
+                    return p_row <= old_row_end &&
+                           old_buffer[p_row * old_cols + p_col].chars[0] == widechar_continuation;
+                });
+            }
+            else {
+                new_height = 1;
+            }
 
-        int32_t spare_rows = new_rows - final_blank_row;
+            int32_t new_row_end   = new_row;
+            int32_t new_row_start = new_row - new_height + 1;
 
-        if(new_row_start < 0 &&       // we'd fall off the top
-            spare_rows >= 0 &&         // we actually have spare rows
-            (!active || new_cursor.row == cursor_unset || (new_cursor.row - new_row_start) < new_rows))
-        {
-            // Attempt to scroll content down into the blank rows at the bottom to
-            // make it fit
-            int32_t downwards = -new_row_start;
-            if(downwards > spare_rows)
-                downwards = spare_rows;
-            int32_t rowcount = new_rows - downwards;
+            old_row = old_row_start;
+            int32_t old_col = 0;
+
+            int32_t spare_rows = new_rows - final_blank_row;
+
+            if(new_row_start < 0 &&       // we'd fall off the top
+                spare_rows >= 0 &&         // we actually have spare rows
+                (!active || new_cursor.row == cursor_unset || (new_cursor.row - new_row_start) < new_rows))
+            {
+                int32_t downwards = -new_row_start;
+                if(downwards > spare_rows)
+                    downwards = spare_rows;
+                int32_t rowcount = new_rows - downwards;
 
 #ifdef DEBUG_REFLOW
-            std::cerr << std::format("  scroll {} rows +{} downwards\n", rowcount, downwards);
+                std::cerr << std::format("  scroll {} rows +{} downwards\n", rowcount, downwards);
 #endif
 
-            std::copy_backward(new_buffer.begin(), new_buffer.begin() + rowcount * new_cols,
-                new_buffer.begin() + (rowcount + downwards) * new_cols);
-            std::copy_backward(new_lineinfo.begin(), new_lineinfo.begin() + rowcount,
-                new_lineinfo.begin() + rowcount + downwards);
+                std::copy_backward(new_buffer.begin(), new_buffer.begin() + rowcount * new_cols,
+                    new_buffer.begin() + (rowcount + downwards) * new_cols);
+                std::copy_backward(new_lineinfo.begin(), new_lineinfo.begin() + rowcount,
+                    new_lineinfo.begin() + rowcount + downwards);
 
-            new_row       += downwards;
-            new_row_start += downwards;
-            new_row_end   += downwards;
+                new_row       += downwards;
+                new_row_start += downwards;
+                new_row_end   += downwards;
 
-            if(new_cursor.row >= 0)
-                new_cursor.row += downwards;
+                if(new_cursor.row >= 0)
+                    new_cursor.row += downwards;
 
-            final_blank_row += downwards;
-        }
+                final_blank_row += downwards;
+            }
 
 #ifdef DEBUG_REFLOW
-        std::cerr << std::format("  rows [{}..{}] <- [{}..{}] width={}\n",
-            new_row_start, new_row_end, old_row_start, old_row_end, width);
+            std::cerr << std::format("  rows [{}..{}] <- [{}..{}] width={}\n",
+                new_row_start, new_row_end, old_row_start, old_row_end, width);
 #endif
 
-        if(new_row_start < 0) {
-            if(old_row_start <= old_cursor.row && old_cursor.row <= old_row_end) {
-                new_cursor.row = 0;
-                new_cursor.col = old_cursor.col;
-                if(new_cursor.col >= new_cols)
-                    new_cursor.col = new_cols - 1;
+            if(new_row_start < 0) {
+                if(old_row_start <= old_cursor.row && old_cursor.row <= old_row_end) {
+                    new_cursor.row = 0;
+                    new_cursor.col = old_cursor.col;
+                    if(new_cursor.col >= new_cols)
+                        new_cursor.col = new_cols - 1;
+                }
+                old_row = old_row_end;
+                break;
             }
-            old_row = old_row_end;
-            break;
-        }
 
-        for(new_row = new_row_start, old_row = old_row_start; new_row <= new_row_end; new_row++) {
-            int32_t count = width >= new_cols ? new_cols : width;
-            width -= count;
+            for(new_row = new_row_start, old_row = old_row_start; new_row <= new_row_end; new_row++) {
+                int32_t count = width >= new_cols ? new_cols : width;
+                width -= count;
 
-            int32_t new_col = 0;
+                int32_t new_col = 0;
 
-            while(count) {
-                // Don't split a double-width character across rows.
-                // InternalScreenCell has no .width field, so we detect wide chars
-                // by checking if the next cell is a widechar_continuation marker
-                // (cf. backfill path which uses ScreenCell.width == 2).
-                if(reflow && new_col == new_cols - 1 && new_cols > 1) {
-                    int32_t peek_col = old_col + 1;
-                    int32_t peek_row = old_row;
-                    if(peek_col >= old_cols) {
-                        peek_row++;
-                        peek_col = 0;
+                while(count) {
+                    if(reflow && new_col == new_cols - 1 && new_cols > 1) {
+                        int32_t peek_col = old_col + 1;
+                        int32_t peek_row = old_row;
+                        if(peek_col >= old_cols) {
+                            peek_row++;
+                            peek_col = 0;
+                        }
+                        if(peek_row <= old_row_end &&
+                           old_buffer[peek_row * old_cols + peek_col].chars[0] == widechar_continuation) {
+                            clearcell(new_buffer[new_row * new_cols + new_col]);
+                            width += count;
+                            break;
+                        }
                     }
-                    if(peek_row <= old_row_end &&
-                       old_buffer[peek_row * old_cols + peek_col].chars[0] == widechar_continuation) {
-                        clearcell(new_buffer[new_row * new_cols + new_col]);
-                        width += count;
-                        break;
+
+                    new_buffer[new_row * new_cols + new_col] = old_buffer[old_row * old_cols + old_col];
+
+                    if(old_cursor.row == old_row && old_cursor.col == old_col) {
+                        new_cursor.row = new_row;
+                        new_cursor.col = new_col;
                     }
+
+                    old_col++;
+                    if(old_col == old_cols) {
+                        old_row++;
+
+                        if(!reflow) {
+                            new_col++;
+                            break;
+                        }
+                        old_col = 0;
+                    }
+
+                    new_col++;
+                    count--;
                 }
 
-                // TODO: Could batch-copy contiguous runs of cells instead of one-at-a-time
-                new_buffer[new_row * new_cols + new_col] = old_buffer[old_row * old_cols + old_col];
-
-                if(old_cursor.row == old_row && old_cursor.col == old_col) {
+                if(old_row <= old_row_end && old_cursor.row == old_row && old_cursor.col >= old_col) {
                     new_cursor.row = new_row;
-                    new_cursor.col = new_col;
+                    new_cursor.col = (old_cursor.col - old_col + new_col);
+                    if(new_cursor.col >= new_cols)
+                        new_cursor.col = new_cols - 1;
                 }
 
-                old_col++;
-                if(old_col == old_cols) {
-                    old_row++;
-
-                    if(!reflow) {
-                        new_col++;
-                        break;
-                    }
-                    old_col = 0;
+                while(new_col < new_cols) {
+                    clearcell(new_buffer[new_row * new_cols + new_col]);
+                    new_col++;
                 }
 
-                new_col++;
-                count--;
+                new_lineinfo[new_row].continuation = (new_row > new_row_start);
             }
 
-            if(old_row <= old_row_end && old_cursor.row == old_row && old_cursor.col >= old_col) {
-                new_cursor.row = new_row;
-                new_cursor.col = (old_cursor.col - old_col + new_col);
-                if(new_cursor.col >= new_cols)
-                    new_cursor.col = new_cols - 1;
-            }
-
-            while(new_col < new_cols) {
-                clearcell(new_buffer[new_row * new_cols + new_col]);
-                new_col++;
-            }
-
-            new_lineinfo[new_row].continuation = (new_row > new_row_start);
+            old_row = old_row_start - 1;
+            new_row = new_row_start - 1;
         }
+    };
 
-        old_row = old_row_start - 1;
-        new_row = new_row_start - 1;
-    }
+    reflow_old_content();
 
     if(old_cursor.row <= old_row) {
-        // cursor would have moved entirely off the top of the screen; lets just
-        // bring it within range
         new_cursor.row = 0;
         new_cursor.col = old_cursor.col;
         if(new_cursor.col >= new_cols)
             new_cursor.col = new_cols - 1;
     }
 
-    // We really expect the cursor position to be set by now
     if(active && (new_cursor.row == cursor_unset || new_cursor.col == cursor_unset)) {
         std::cerr << "screen_resize failed to update cursor position\n";
         std::abort();
     }
 
+    // ---- Phase 2: Push excess old rows to scrollback ----
+
     if(old_row >= 0 && bufidx == bufidx_primary) {
-        // Push spare lines to scrollback buffer
         bool has_sink = callbacks || (scrollback() && scrollback()->capacity > 0);
         if(has_sink) {
             int32_t saved_buffer_idx = buffer_idx;
@@ -854,8 +859,8 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
             statefields.pos.row -= (old_row + 1);
     }
 
-    // Helper lambdas for pop/pushback that try internal scrollback first, then callbacks
-    bool has_pop_source = (scrollback() && scrollback()->capacity > 0) || callbacks;
+    // ---- Phase 3: Backfill empty rows from scrollback ----
+
     auto do_popline = [this](std::span<ScreenCell> cells, bool& cont) -> bool {
         if(scrollback() && scrollback()->capacity > 0)
             return scrollback()->pop_line(cells, cont);
@@ -870,194 +875,179 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
             callbacks->on_sb_pushline(cells, cont);
     };
 
-    if(new_row >= 0 && bufidx == bufidx_primary && has_pop_source) {
-        if(reflow) {
-            // Reflow-aware backfill: pop complete logical lines from scrollback,
-            // join continuation segments, and re-split at new column width
-            std::vector<ScreenCell> logical_cells(old_cols * initial_logical_segments);
+    // Reflow-aware backfill: pop complete logical lines from scrollback,
+    // join continuation segments, and re-split at new column width.
+    auto backfill_reflow = [&]() {
+        std::vector<ScreenCell> logical_cells(old_cols * initial_logical_segments);
 
-            while(new_row >= 0) {
-                // Pop one complete logical line. Since scrollback is LIFO, the first
-                // pop gives the last segment. Keep popping while continuation=true
-                // to collect all segments of the logical line.
-                int32_t total_segs = 0;
-                bool cont = false;
+        while(new_row >= 0) {
+            int32_t total_segs = 0;
+            bool cont = false;
 
-                bool popresult = do_popline(
+            bool popresult = do_popline(
+                std::span(sb_buffer).first(static_cast<size_t>(old_cols)), cont);
+            if(!popresult)
+                break;
+
+            if(static_cast<int32_t>(logical_cells.size()) < old_cols) {
+                logical_cells.assign(old_cols * initial_logical_segments, ScreenCell{});
+            }
+            std::copy_n(sb_buffer.data(), old_cols, logical_cells.data());
+            total_segs = 1;
+
+            while(cont) {
+                popresult = do_popline(
                     std::span(sb_buffer).first(static_cast<size_t>(old_cols)), cont);
                 if(!popresult)
                     break;
 
-                // Ensure capacity for first segment
-                if(static_cast<int32_t>(logical_cells.size()) < old_cols) {
-                    logical_cells.assign(old_cols * initial_logical_segments, ScreenCell{});
+                int32_t needed = old_cols * (total_segs + 1);
+                if(static_cast<int32_t>(logical_cells.size()) < needed) {
+                    logical_cells.resize(needed * 2);
                 }
-                std::copy_n(sb_buffer.data(), old_cols, logical_cells.data());
-                total_segs = 1;
-
-                // If this segment is a continuation, keep popping to find the start
-                while(cont) {
-                    popresult = do_popline(
-                        std::span(sb_buffer).first(static_cast<size_t>(old_cols)), cont);
-                    if(!popresult)
-                        break;
-
-                    int32_t needed = old_cols * (total_segs + 1);
-                    if(static_cast<int32_t>(logical_cells.size()) < needed) {
-                        logical_cells.resize(needed * 2);
-                    }
-                    std::copy_n(sb_buffer.data(), old_cols, &logical_cells[old_cols * total_segs]);
-                    total_segs++;
-                }
-
-                // Segments are in reverse order (last popped = first in logical line).
-                // Reverse them using sb_buffer as temporary swap space.
-                for(int32_t i = 0; i < total_segs / 2; i++) {
-                    int32_t j = total_segs - 1 - i;
-                    std::swap_ranges(&logical_cells[i * old_cols],
-                        &logical_cells[i * old_cols] + old_cols,
-                        &logical_cells[j * old_cols]);
-                }
-
-                // Compute content width: full old_cols for all segments except last,
-                // where we trim trailing blank cells
-                int32_t total_width = 0;
-                for(int32_t seg = 0; seg < total_segs; seg++) {
-                    if(seg < total_segs - 1) {
-                        total_width += old_cols;
-                    }
-                    else {
-                        int32_t col = old_cols - 1;
-                        while(col >= 0 && logical_cells[seg * old_cols + col].chars[0] == 0)
-                            col--;
-                        total_width += col + 1;
-                    }
-                }
-
-                int32_t new_height;
-                if(total_width > 0) {
-                    // Simulate packing to account for double-width chars at row boundaries
-                    new_height = 0;
-                    int32_t tw = 0;
-                    while(tw < total_width) {
-                        int32_t chunk = std::min(new_cols, total_width - tw);
-                        if(chunk > 1 && chunk == new_cols && tw + chunk < total_width &&
-                           logical_cells[tw + chunk - 1].width == 2) {
-                            chunk--;
-                        }
-                        tw += chunk;
-                        new_height++;
-                    }
-                }
-                else {
-                    new_height = 1;
-                }
-
-                if(new_row - new_height + 1 < 0) {
-                    // Not enough space - push the logical line back to scrollback
-                    for(int32_t seg = 0; seg < total_segs; seg++)
-                        do_pushback(
-                            std::span(logical_cells).subspan(static_cast<size_t>(seg * old_cols), static_cast<size_t>(old_cols)),
-                            seg > 0);
-                    break;
-                }
-
-                // Place the reflowed logical line into buffer rows
-                // [new_row - new_height + 1 .. new_row]
-                int32_t src_seg = 0, src_col = 0;
-                int32_t remaining = total_width;
-                int32_t row_start = new_row - new_height + 1;
-
-                for(int32_t row = row_start; row <= new_row; row++) {
-                    new_lineinfo[row].continuation = (row > row_start);
-
-                    int32_t count = remaining >= new_cols ? new_cols : remaining;
-                    remaining -= count;
-
-                    Pos pos{};
-                    pos.row = row;
-                    for(pos.col = 0; count > 0; pos.col++, count--) {
-                        ScreenCell& src = logical_cells[src_seg * old_cols + src_col];
-                        InternalScreenCell& dst = new_buffer[pos.row * new_cols + pos.col];
-
-                        // Don't split a double-width character across rows
-                        if(src.width == 2 && pos.col == new_cols - 1 && new_cols > 1) {
-                            clearcell(dst);
-                            remaining += count;
-                            break;
-                        }
-
-                        dst.chars = src.chars;
-
-                        cell_attrs_to_pen(src, dst.pen, global_reverse);
-
-                        if(src.width == 2 && pos.col < (new_cols - 1))
-                            new_buffer[pos.row * new_cols + pos.col + 1].chars[0] = widechar_continuation;
-
-                        src_col++;
-                        if(src_col >= old_cols) {
-                            src_seg++;
-                            src_col = 0;
-                        }
-                    }
-
-                    for( ; pos.col < new_cols; pos.col++)
-                        clearcell(new_buffer[pos.row * new_cols + pos.col]);
-                }
-
-                if(active)
-                    statefields.pos.row += new_height;
-
-                new_row -= new_height;
+                std::copy_n(sb_buffer.data(), old_cols, &logical_cells[old_cols * total_segs]);
+                total_segs++;
             }
 
-        }
-        else {
-            // Non-reflow backfill (original path for sb_popline without reflow)
-            while(new_row >= 0) {
-                bool continuation = false;
-                bool popresult = do_popline(
-                    std::span(sb_buffer).first(static_cast<size_t>(old_cols)), continuation);
-                if(!popresult)
-                    break;
-                new_lineinfo[new_row].continuation = continuation;
+            // Segments are in reverse order — reverse them
+            for(int32_t i = 0; i < total_segs / 2; i++) {
+                int32_t j = total_segs - 1 - i;
+                std::swap_ranges(&logical_cells[i * old_cols],
+                    &logical_cells[i * old_cols] + old_cols,
+                    &logical_cells[j * old_cols]);
+            }
+
+            // Compute content width
+            int32_t total_width = 0;
+            for(int32_t seg = 0; seg < total_segs; seg++) {
+                if(seg < total_segs - 1) {
+                    total_width += old_cols;
+                }
+                else {
+                    int32_t col = old_cols - 1;
+                    while(col >= 0 && logical_cells[seg * old_cols + col].chars[0] == 0)
+                        col--;
+                    total_width += col + 1;
+                }
+            }
+
+            int32_t new_height;
+            if(total_width > 0) {
+                new_height = compute_packed_height(total_width, new_cols, [&](int32_t boundary_pos) {
+                    return logical_cells[boundary_pos - 1].width == 2;
+                });
+            }
+            else {
+                new_height = 1;
+            }
+
+            if(new_row - new_height + 1 < 0) {
+                for(int32_t seg = 0; seg < total_segs; seg++)
+                    do_pushback(
+                        std::span(logical_cells).subspan(static_cast<size_t>(seg * old_cols), static_cast<size_t>(old_cols)),
+                        seg > 0);
+                break;
+            }
+
+            // Place the reflowed logical line into buffer rows
+            int32_t src_seg = 0, src_col = 0;
+            int32_t remaining = total_width;
+            int32_t row_start = new_row - new_height + 1;
+
+            for(int32_t row = row_start; row <= new_row; row++) {
+                new_lineinfo[row].continuation = (row > row_start);
+
+                int32_t count = remaining >= new_cols ? new_cols : remaining;
+                remaining -= count;
 
                 Pos pos{};
-                pos.row = new_row;
-                for(pos.col = 0; pos.col < old_cols && pos.col < new_cols; ) {
-                    int32_t w = sb_buffer[pos.col].width;
-                    if(w < 1) w = 1;
-                    ScreenCell& src = sb_buffer[pos.col];
+                pos.row = row;
+                for(pos.col = 0; count > 0; pos.col++, count--) {
+                    ScreenCell& src = logical_cells[src_seg * old_cols + src_col];
                     InternalScreenCell& dst = new_buffer[pos.row * new_cols + pos.col];
 
-                    // Don't place a double-width char at the last column where it won't fit
-                    if(src.width == 2 && pos.col == new_cols - 1) {
+                    if(src.width == 2 && pos.col == new_cols - 1 && new_cols > 1) {
                         clearcell(dst);
-                        pos.col += w;
-                        continue;
+                        remaining += count;
+                        break;
                     }
 
                     dst.chars = src.chars;
-
                     cell_attrs_to_pen(src, dst.pen, global_reverse);
 
                     if(src.width == 2 && pos.col < (new_cols - 1))
                         new_buffer[pos.row * new_cols + pos.col + 1].chars[0] = widechar_continuation;
 
-                    pos.col += w;
+                    src_col++;
+                    if(src_col >= old_cols) {
+                        src_seg++;
+                        src_col = 0;
+                    }
                 }
+
                 for( ; pos.col < new_cols; pos.col++)
                     clearcell(new_buffer[pos.row * new_cols + pos.col]);
-                new_row--;
-
-                if(active)
-                    statefields.pos.row++;
             }
+
+            if(active)
+                statefields.pos.row += new_height;
+
+            new_row -= new_height;
         }
+    };
+
+    // Simple backfill without reflow: pop one row at a time from scrollback.
+    auto backfill_simple = [&]() {
+        while(new_row >= 0) {
+            bool continuation = false;
+            bool popresult = do_popline(
+                std::span(sb_buffer).first(static_cast<size_t>(old_cols)), continuation);
+            if(!popresult)
+                break;
+            new_lineinfo[new_row].continuation = continuation;
+
+            Pos pos{};
+            pos.row = new_row;
+            for(pos.col = 0; pos.col < old_cols && pos.col < new_cols; ) {
+                int32_t w = sb_buffer[pos.col].width;
+                if(w < 1) w = 1;
+                ScreenCell& src = sb_buffer[pos.col];
+                InternalScreenCell& dst = new_buffer[pos.row * new_cols + pos.col];
+
+                if(src.width == 2 && pos.col == new_cols - 1) {
+                    clearcell(dst);
+                    pos.col += w;
+                    continue;
+                }
+
+                dst.chars = src.chars;
+                cell_attrs_to_pen(src, dst.pen, global_reverse);
+
+                if(src.width == 2 && pos.col < (new_cols - 1))
+                    new_buffer[pos.row * new_cols + pos.col + 1].chars[0] = widechar_continuation;
+
+                pos.col += w;
+            }
+            for( ; pos.col < new_cols; pos.col++)
+                clearcell(new_buffer[pos.row * new_cols + pos.col]);
+            new_row--;
+
+            if(active)
+                statefields.pos.row++;
+        }
+    };
+
+    bool has_pop_source = (scrollback() && scrollback()->capacity > 0) || callbacks;
+    if(new_row >= 0 && bufidx == bufidx_primary && has_pop_source) {
+        if(reflow)
+            backfill_reflow();
+        else
+            backfill_simple();
     }
 
+    // ---- Phase 4: Scroll content to top and blank-fill bottom ----
+
     if(new_row >= 0) {
-        // Scroll new rows back up to the top and fill in blanks at the bottom
         int32_t moverows = new_rows - new_row - 1;
         std::copy(new_buffer.begin() + (new_row + 1) * new_cols,
             new_buffer.begin() + (new_row + 1 + moverows) * new_cols,

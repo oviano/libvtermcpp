@@ -886,6 +886,255 @@ void State::Impl::request_version_string()
         version_major, version_minor);
 }
 
+// ---- CSI helper: cursor movement ----
+
+void State::Impl::on_csi_cursor(int32_t command, std::span<const int64_t> args, int32_t argcount) {
+    switch(command) {
+    case 'A': // CUU - ECMA-48 8.3.22
+        pos.row -= csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'B': // CUD - ECMA-48 8.3.19
+        pos.row += csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'C': // CUF - ECMA-48 8.3.20
+        pos.col += csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'D': // CUB - ECMA-48 8.3.18
+        pos.col -= csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'E': // CNL - ECMA-48 8.3.12
+        pos.col = 0;
+        pos.row += csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'F': // CPL - ECMA-48 8.3.13
+        pos.col = 0;
+        pos.row -= csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'G': // CHA - ECMA-48 8.3.9
+        pos.col = csi_arg_or(args[0], 1) - 1;
+        at_phantom = false;
+        break;
+
+    case 'H': // CUP - ECMA-48 8.3.21
+    case 'f': { // HVP - ECMA-48 8.3.63
+        int32_t row = csi_arg_or(args[0], 1);
+        int32_t col = argcount < 2 || csi_arg_is_missing(args[1]) ? 1 : csi_arg_i32(args[1]);
+        pos.row = row-1;
+        pos.col = col-1;
+        if(mode.origin) {
+            pos.row += scrollregion_top;
+            pos.col += scrollregion_left_val();
+        }
+        at_phantom = false;
+        break;
+    }
+
+    case '`': // HPA - ECMA-48 8.3.57
+        pos.col = csi_arg_or(args[0], 1) - 1;
+        at_phantom = false;
+        break;
+
+    case 'a': // HPR - ECMA-48 8.3.59
+        pos.col += csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'd': // VPA - ECMA-48 8.3.158
+        pos.row = csi_arg_or(args[0], 1) - 1;
+        if(mode.origin)
+            pos.row += scrollregion_top;
+        at_phantom = false;
+        break;
+
+    case 'e': // VPR - ECMA-48 8.3.160
+        pos.row += csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'j': // HPB - ECMA-48 8.3.58
+        pos.col -= csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+
+    case 'k': // VPB - ECMA-48 8.3.159
+        pos.row -= csi_arg_count(args[0]);
+        at_phantom = false;
+        break;
+    }
+}
+
+// ---- CSI helper: edit operations (insert/delete/scroll) ----
+
+void State::Impl::on_csi_edit(int32_t command, std::span<const int64_t> args) {
+    static constexpr auto INTERMED = [](int32_t i, int32_t b) constexpr { return (i << 16) | b; };
+
+    int32_t count = csi_arg_count(args[0]);
+
+    switch(command) {
+    case '@': { // ICH - ECMA-48 8.3.64
+        if(!is_cursor_in_scrollregion())
+            break;
+        Rect rect{.start_row = pos.row, .end_row = pos.row + 1, .start_col = pos.col,
+            .end_col = mode.leftrightmargin ? scrollregion_right_val() : this_row_width()};
+        scroll(rect, 0, -count);
+        break;
+    }
+
+    case 'L': { // IL - ECMA-48 8.3.67
+        if(!is_cursor_in_scrollregion())
+            break;
+        Rect rect{.start_row = pos.row, .end_row = scrollregion_bottom_val(), .start_col = scrollregion_left_val(), .end_col = scrollregion_right_val()};
+        scroll(rect, -count, 0);
+        break;
+    }
+
+    case 'M': { // DL - ECMA-48 8.3.32
+        if(!is_cursor_in_scrollregion())
+            break;
+        Rect rect{.start_row = pos.row, .end_row = scrollregion_bottom_val(), .start_col = scrollregion_left_val(), .end_col = scrollregion_right_val()};
+        scroll(rect, count, 0);
+        break;
+    }
+
+    case 'P': { // DCH - ECMA-48 8.3.26
+        if(!is_cursor_in_scrollregion())
+            break;
+        Rect rect{.start_row = pos.row, .end_row = pos.row + 1, .start_col = pos.col,
+            .end_col = mode.leftrightmargin ? scrollregion_right_val() : this_row_width()};
+        scroll(rect, 0, count);
+        break;
+    }
+
+    case 'S': { // SU - ECMA-48 8.3.147
+        Rect rect{.start_row = scrollregion_top, .end_row = scrollregion_bottom_val(), .start_col = scrollregion_left_val(), .end_col = scrollregion_right_val()};
+        scroll(rect, count, 0);
+        break;
+    }
+
+    case 'T': { // SD - ECMA-48 8.3.113
+        Rect rect{.start_row = scrollregion_top, .end_row = scrollregion_bottom_val(), .start_col = scrollregion_left_val(), .end_col = scrollregion_right_val()};
+        scroll(rect, -count, 0);
+        break;
+    }
+
+    case INTERMED('\'', '}'): { // DECIC
+        if(!is_cursor_in_scrollregion())
+            break;
+        Rect rect{.start_row = scrollregion_top, .end_row = scrollregion_bottom_val(), .start_col = pos.col, .end_col = scrollregion_right_val()};
+        scroll(rect, 0, -count);
+        break;
+    }
+
+    case INTERMED('\'', '~'): { // DECDC
+        if(!is_cursor_in_scrollregion())
+            break;
+        Rect rect{.start_row = scrollregion_top, .end_row = scrollregion_bottom_val(), .start_col = pos.col, .end_col = scrollregion_right_val()};
+        scroll(rect, 0, count);
+        break;
+    }
+    }
+}
+
+// ---- CSI helper: erase operations ----
+
+std::optional<bool> State::Impl::on_csi_erase(int32_t command, int32_t leader_byte, std::span<const int64_t> args) {
+    static constexpr auto LEADER = [](int32_t l, int32_t b) constexpr { return (l << 8) | b; };
+
+    switch(command) {
+    case 'J': // ED - ECMA-48 8.3.39
+    case LEADER('?', 'J'): { // DECSED
+        bool selective = (leader_byte == '?');
+        Rect rect;
+        switch(csi_arg(args[0])) {
+        case csi_arg_missing:
+        case 0:
+            rect = {pos.row, pos.row + 1, pos.col, cols};
+            if(rect.end_col > rect.start_col)
+                erase(rect, selective);
+
+            rect = {pos.row + 1, rows, 0, cols};
+            for(int32_t row = rect.start_row; row < rect.end_row; row++)
+                set_lineinfo(row, true, DWL::Off, DHL::Off);
+            if(rect.end_row > rect.start_row)
+                erase(rect, selective);
+            break;
+
+        case 1:
+            rect = {0, pos.row, 0, cols};
+            for(int32_t row = rect.start_row; row < rect.end_row; row++)
+                set_lineinfo(row, true, DWL::Off, DHL::Off);
+            if(rect.end_col > rect.start_col)
+                erase(rect, selective);
+
+            rect = {pos.row, pos.row + 1, 0, pos.col + 1};
+            if(rect.end_row > rect.start_row)
+                erase(rect, selective);
+            break;
+
+        case 2:
+            rect = {0, rows, 0, cols};
+            for(int32_t row = rect.start_row; row < rect.end_row; row++)
+                set_lineinfo(row, true, DWL::Off, DHL::Off);
+            erase(rect, selective);
+            break;
+
+        case 3:
+            if(callbacks)
+                if(callbacks->on_sb_clear())
+                    return true;
+            break;
+        }
+        break;
+    }
+
+    case 'K': // EL - ECMA-48 8.3.41
+    case LEADER('?', 'K'): { // DECSEL
+        bool selective = (leader_byte == '?');
+        Rect rect;
+        rect.start_row = pos.row;
+        rect.end_row   = pos.row + 1;
+
+        switch(csi_arg(args[0])) {
+        case csi_arg_missing:
+        case 0:
+            rect.start_col = pos.col; rect.end_col = this_row_width(); break;
+        case 1:
+            rect.start_col = 0; rect.end_col = pos.col + 1; break;
+        case 2:
+            rect.start_col = 0; rect.end_col = this_row_width(); break;
+        default:
+            return false;
+        }
+
+        if(rect.end_col > rect.start_col)
+            erase(rect, selective);
+
+        break;
+    }
+
+    case 'X': { // ECH - ECMA-48 8.3.38
+        int32_t count = csi_arg_count(args[0]);
+        Rect rect{.start_row = pos.row, .end_row = pos.row + 1, .start_col = pos.col, .end_col = std::min(pos.col + count, this_row_width())};
+        erase(rect, false);
+        break;
+    }
+    }
+
+    return std::nullopt; // handled, continue normal flow
+}
+
 // ---- CSI handler ----
 
 bool State::Impl::on_csi(std::string_view leader, std::span<const int64_t> args, std::string_view intermed, char command)
@@ -932,216 +1181,48 @@ bool State::Impl::on_csi(std::string_view leader, std::span<const int64_t> args,
     static constexpr auto INTERMED = [](int32_t i, int32_t b) constexpr { return (i << 16) | b; };
 
     switch(intermed_byte << 16 | leader_byte << 8 | command) {
-    case '@': { // ICH - ECMA-48 8.3.64
-        int32_t count = csi_arg_count(args[0]);
-
-        if(!is_cursor_in_scrollregion())
-            break;
-
-        Rect rect{.start_row = pos.row, .end_row = pos.row + 1, .start_col = pos.col,
-            .end_col = mode.leftrightmargin ? scrollregion_right_val() : this_row_width()};
-
-        scroll(rect, 0, -count);
-
+    case '@': // ICH - ECMA-48 8.3.64
+    case 'L': // IL - ECMA-48 8.3.67
+    case 'M': // DL - ECMA-48 8.3.32
+    case 'P': // DCH - ECMA-48 8.3.26
+    case 'S': // SU - ECMA-48 8.3.147
+    case 'T': // SD - ECMA-48 8.3.113
+    case INTERMED('\'', '}'): // DECIC
+    case INTERMED('\'', '~'): // DECDC
+        on_csi_edit(intermed_byte << 16 | command, args);
         break;
-    }
 
     case 'A': // CUU - ECMA-48 8.3.22
-        pos.row -= csi_arg_count(args[0]);
-        at_phantom = false;
-        break;
-
     case 'B': // CUD - ECMA-48 8.3.19
-        pos.row += csi_arg_count(args[0]);
-        at_phantom = false;
-        break;
-
     case 'C': // CUF - ECMA-48 8.3.20
-        pos.col += csi_arg_count(args[0]);
-        at_phantom = false;
-        break;
-
     case 'D': // CUB - ECMA-48 8.3.18
-        pos.col -= csi_arg_count(args[0]);
-        at_phantom = false;
-        break;
-
     case 'E': // CNL - ECMA-48 8.3.12
-        pos.col = 0;
-        pos.row += csi_arg_count(args[0]);
-        at_phantom = false;
-        break;
-
     case 'F': // CPL - ECMA-48 8.3.13
-        pos.col = 0;
-        pos.row -= csi_arg_count(args[0]);
-        at_phantom = false;
-        break;
-
     case 'G': // CHA - ECMA-48 8.3.9
-        pos.col = csi_arg_or(args[0], 1) - 1;
-        at_phantom = false;
+    case 'H': // CUP - ECMA-48 8.3.21
+        on_csi_cursor(command, args, argcount);
         break;
-
-    case 'H': { // CUP - ECMA-48 8.3.21
-        int32_t row = csi_arg_or(args[0], 1);
-        int32_t col = argcount < 2 || csi_arg_is_missing(args[1]) ? 1 : csi_arg_i32(args[1]);
-        // zero-based
-        pos.row = row-1;
-        pos.col = col-1;
-        if(mode.origin) {
-            pos.row += scrollregion_top;
-            pos.col += scrollregion_left_val();
-        }
-        at_phantom = false;
-        break;
-    }
 
     case 'I': // CHT - ECMA-48 8.3.10
         tab(csi_arg_count(args[0]), +1);
         break;
 
     case 'J': // ED - ECMA-48 8.3.39
-    case LEADER('?', 'J'): { // DECSED - Selective Erase in Display
-        bool selective = (leader_byte == '?');
-        Rect rect;
-        switch(csi_arg(args[0])) {
-        case csi_arg_missing:
-        case 0:
-            rect = {pos.row, pos.row + 1, pos.col, cols};
-            if(rect.end_col > rect.start_col)
-                erase(rect, selective);
-
-            rect = {pos.row + 1, rows, 0, cols};
-            for(int32_t row = rect.start_row; row < rect.end_row; row++)
-                set_lineinfo(row, true, DWL::Off, DHL::Off);
-            if(rect.end_row > rect.start_row)
-                erase(rect, selective);
-            break;
-
-        case 1:
-            rect = {0, pos.row, 0, cols};
-            for(int32_t row = rect.start_row; row < rect.end_row; row++)
-                set_lineinfo(row, true, DWL::Off, DHL::Off);
-            if(rect.end_col > rect.start_col)
-                erase(rect, selective);
-
-            rect = {pos.row, pos.row + 1, 0, pos.col + 1};
-            if(rect.end_row > rect.start_row)
-                erase(rect, selective);
-            break;
-
-        case 2:
-            rect = {0, rows, 0, cols};
-            for(int32_t row = rect.start_row; row < rect.end_row; row++)
-                set_lineinfo(row, true, DWL::Off, DHL::Off);
-            erase(rect, selective);
-            break;
-
-        case 3:
-            if(callbacks)
-                if(callbacks->on_sb_clear())
-                    return true;
-            break;
-        }
-        break;
-    }
-
+    case LEADER('?', 'J'): // DECSED - Selective Erase in Display
     case 'K': // EL - ECMA-48 8.3.41
-    case LEADER('?', 'K'): { // DECSEL - Selective Erase in Line
-        bool selective = (leader_byte == '?');
-        Rect rect;
-        rect.start_row = pos.row;
-        rect.end_row   = pos.row + 1;
-
-        switch(csi_arg(args[0])) {
-        case csi_arg_missing:
-        case 0:
-            rect.start_col = pos.col; rect.end_col = this_row_width(); break;
-        case 1:
-            rect.start_col = 0; rect.end_col = pos.col + 1; break;
-        case 2:
-            rect.start_col = 0; rect.end_col = this_row_width(); break;
-        default:
-            return false;
-        }
-
-        if(rect.end_col > rect.start_col)
-            erase(rect, selective);
-
+    case LEADER('?', 'K'): // DECSEL - Selective Erase in Line
+    case 'X': // ECH - ECMA-48 8.3.38
+        if(auto r = on_csi_erase(leader_byte << 8 | command, leader_byte, args))
+            return *r;
         break;
-    }
-
-    case 'L': { // IL - ECMA-48 8.3.67
-        int32_t count = csi_arg_count(args[0]);
-
-        if(!is_cursor_in_scrollregion())
-            break;
-
-        Rect rect{.start_row = pos.row, .end_row = scrollregion_bottom_val(), .start_col = scrollregion_left_val(), .end_col = scrollregion_right_val()};
-        scroll(rect, -count, 0);
-
-        break;
-    }
-
-    case 'M': { // DL - ECMA-48 8.3.32
-        int32_t count = csi_arg_count(args[0]);
-
-        if(!is_cursor_in_scrollregion())
-            break;
-
-        Rect rect{.start_row = pos.row, .end_row = scrollregion_bottom_val(), .start_col = scrollregion_left_val(), .end_col = scrollregion_right_val()};
-        scroll(rect, count, 0);
-
-        break;
-    }
-
-    case 'P': { // DCH - ECMA-48 8.3.26
-        int32_t count = csi_arg_count(args[0]);
-
-        if(!is_cursor_in_scrollregion())
-            break;
-
-        Rect rect{.start_row = pos.row, .end_row = pos.row + 1, .start_col = pos.col,
-            .end_col = mode.leftrightmargin ? scrollregion_right_val() : this_row_width()};
-        scroll(rect, 0, count);
-
-        break;
-    }
-
-    case 'S': { // SU - ECMA-48 8.3.147
-        int32_t count = csi_arg_count(args[0]);
-        Rect rect{.start_row = scrollregion_top, .end_row = scrollregion_bottom_val(), .start_col = scrollregion_left_val(), .end_col = scrollregion_right_val()};
-        scroll(rect, count, 0);
-        break;
-    }
-
-    case 'T': { // SD - ECMA-48 8.3.113
-        int32_t count = csi_arg_count(args[0]);
-        Rect rect{.start_row = scrollregion_top, .end_row = scrollregion_bottom_val(), .start_col = scrollregion_left_val(), .end_col = scrollregion_right_val()};
-        scroll(rect, -count, 0);
-        break;
-    }
-
-    case 'X': { // ECH - ECMA-48 8.3.38
-        int32_t count = csi_arg_count(args[0]);
-        Rect rect{.start_row = pos.row, .end_row = pos.row + 1, .start_col = pos.col, .end_col = std::min(pos.col + count, this_row_width())};
-        erase(rect, false);
-        break;
-    }
 
     case 'Z': // CBT - ECMA-48 8.3.7
         tab(csi_arg_count(args[0]), -1);
         break;
 
     case '`': // HPA - ECMA-48 8.3.57
-        pos.col = csi_arg_or(args[0], 1) - 1;
-        at_phantom = false;
-        break;
-
     case 'a': // HPR - ECMA-48 8.3.59
-        pos.col += csi_arg_count(args[0]);
-        at_phantom = false;
+        on_csi_cursor(command, args, argcount);
         break;
 
     case 'b': { // REP - ECMA-48 8.3.103
@@ -1173,30 +1254,10 @@ bool State::Impl::on_csi(std::string_view leader, std::span<const int64_t> args,
         break;
 
     case 'd': // VPA - ECMA-48 8.3.158
-        pos.row = csi_arg_or(args[0], 1) - 1;
-        if(mode.origin)
-            pos.row += scrollregion_top;
-        at_phantom = false;
-        break;
-
     case 'e': // VPR - ECMA-48 8.3.160
-        pos.row += csi_arg_count(args[0]);
-        at_phantom = false;
+    case 'f': // HVP - ECMA-48 8.3.63
+        on_csi_cursor(command, args, argcount);
         break;
-
-    case 'f': { // HVP - ECMA-48 8.3.63
-        int32_t row = csi_arg_or(args[0], 1);
-        int32_t col = argcount < 2 || csi_arg_is_missing(args[1]) ? 1 : csi_arg_i32(args[1]);
-        // zero-based
-        pos.row = row-1;
-        pos.col = col-1;
-        if(mode.origin) {
-            pos.row += scrollregion_top;
-            pos.col += scrollregion_left_val();
-        }
-        at_phantom = false;
-        break;
-    }
 
     case 'g': { // TBC - ECMA-48 8.3.154
         int32_t val = csi_arg_or(args[0], 0);
@@ -1234,13 +1295,8 @@ bool State::Impl::on_csi(std::string_view leader, std::span<const int64_t> args,
         break;
 
     case 'j': // HPB - ECMA-48 8.3.58
-        pos.col -= csi_arg_count(args[0]);
-        at_phantom = false;
-        break;
-
     case 'k': // VPB - ECMA-48 8.3.159
-        pos.row -= csi_arg_count(args[0]);
-        at_phantom = false;
+        on_csi_cursor(command, args, argcount);
         break;
 
     case 'l': // RM - ECMA-48 8.3.106
@@ -1406,30 +1462,6 @@ bool State::Impl::on_csi(std::string_view leader, std::span<const int64_t> args,
         }
 
         break;
-
-    case INTERMED('\'', '}'): { // DECIC
-        int32_t count = csi_arg_count(args[0]);
-
-        if(!is_cursor_in_scrollregion())
-            break;
-
-        Rect rect{.start_row = scrollregion_top, .end_row = scrollregion_bottom_val(), .start_col = pos.col, .end_col = scrollregion_right_val()};
-        scroll(rect, 0, -count);
-
-        break;
-    }
-
-    case INTERMED('\'', '~'): { // DECDC
-        int32_t count = csi_arg_count(args[0]);
-
-        if(!is_cursor_in_scrollregion())
-            break;
-
-        Rect rect{.start_row = scrollregion_top, .end_row = scrollregion_bottom_val(), .start_col = pos.col, .end_col = scrollregion_right_val()};
-        scroll(rect, 0, count);
-
-        break;
-    }
 
     default:
         if(fallbacks)
