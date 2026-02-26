@@ -1,4 +1,4 @@
-// test_93_regression_review.cpp — regression tests for code review findings #1-15
+// test_93_regression_review.cpp — regression tests for code review findings #1-20
 //
 // Each test targets a specific bug found during review that was not caught by
 // the existing test suite. The bugs involve combinations of features that were
@@ -709,4 +709,219 @@ TEST(regression_rep_wide_char_boundary)
             ASSERT_TRUE(g_cb.putglyph[i].col + 2 <= 10);
         }
     }
+}
+
+// ============================================================================
+// Group 9: Rect::clip UB (#16)
+// ============================================================================
+
+// #16: Rect::clip uses std::clamp(end_row, start_row, bounds.end_row) where
+// start_row (after max with bounds.start_row) can exceed bounds.end_row when
+// the rect is entirely outside the clipping bounds. std::clamp requires lo<=hi.
+TEST(regression_rect_clip_outside_bounds)
+{
+    // Rect entirely below clipping bounds
+    Rect r{.start_row = 10, .end_row = 15, .start_col = 0, .end_col = 5};
+    Rect bounds{.start_row = 0, .end_row = 5, .start_col = 0, .end_col = 10};
+    r.clip(bounds);
+
+    // Should produce a zero-area rect, not UB
+    ASSERT_TRUE(r.start_row >= r.end_row || r.start_col >= r.end_col ||
+                (r.start_row == r.end_row && r.start_col == r.end_col));
+    // Verify start_row was clamped to bounds
+    ASSERT_TRUE(r.start_row >= bounds.start_row);
+    // end_row should be >= start_row (no inversion)
+    ASSERT_TRUE(r.end_row >= r.start_row);
+    ASSERT_TRUE(r.end_col >= r.start_col);
+
+    // Rect entirely to the right of clipping bounds
+    Rect r2{.start_row = 0, .end_row = 5, .start_col = 20, .end_col = 30};
+    Rect bounds2{.start_row = 0, .end_row = 10, .start_col = 0, .end_col = 10};
+    r2.clip(bounds2);
+    ASSERT_TRUE(r2.end_col >= r2.start_col);
+    ASSERT_TRUE(r2.start_col >= bounds2.start_col);
+}
+
+// ============================================================================
+// Group 10: UTF-8 C0/DEL stale bytes_remaining (#17)
+// ============================================================================
+
+// #17: UTF-8 decoder C0/DEL early returns don't reset bytes_remaining when
+// interrupting a multi-byte sequence. Next call treats subsequent continuation
+// bytes as part of the stale sequence instead of emitting replacement chars.
+TEST(regression_utf8_decoder_c0_stale_state)
+{
+    auto ei = create_encoding(EncodingType::UTF8, 'u');
+    ei->init();
+
+    std::array<uint32_t, 4> cp{};
+
+    // Start a 3-byte sequence: \xE4 expects 2 continuation bytes
+    auto r = ei->decode(cp, std::span{"\xE4", 1});
+    ASSERT_EQ(r.codepoints_produced, 0);  // waiting for continuations
+
+    // Send C0 control (NUL) which interrupts the sequence
+    r = ei->decode(cp, std::span{"\x00", 1});
+    // Should emit replacement char for interrupted sequence
+    ASSERT_EQ(r.codepoints_produced, 1);
+    ASSERT_EQ(cp[0], 0xFFFD);
+    ASSERT_EQ(r.bytes_consumed, 0);  // NUL not consumed (returned for caller)
+
+    // Now send a normal ASCII char — should decode normally, not as continuation
+    r = ei->decode(cp, std::span{"B", 1});
+    ASSERT_EQ(r.codepoints_produced, 1);
+    ASSERT_EQ(cp[0], static_cast<uint32_t>('B'));
+}
+
+// #17 variant: DEL (0x7F) interrupts a multi-byte sequence.
+TEST(regression_utf8_decoder_del_stale_state)
+{
+    auto ei = create_encoding(EncodingType::UTF8, 'u');
+    ei->init();
+
+    std::array<uint32_t, 4> cp{};
+
+    // Start a 2-byte sequence: \xC3 expects 1 continuation byte
+    auto r = ei->decode(cp, std::span{"\xC3", 1});
+    ASSERT_EQ(r.codepoints_produced, 0);
+
+    // Send DEL which interrupts the sequence
+    r = ei->decode(cp, std::span{"\x7F", 1});
+    ASSERT_EQ(r.codepoints_produced, 1);
+    ASSERT_EQ(cp[0], 0xFFFD);  // replacement for interrupted sequence
+    ASSERT_EQ(r.bytes_consumed, 0);  // DEL not consumed
+
+    // Next decode should handle subsequent input cleanly
+    r = ei->decode(cp, std::span{"X", 1});
+    ASSERT_EQ(r.codepoints_produced, 1);
+    ASSERT_EQ(cp[0], static_cast<uint32_t>('X'));
+}
+
+// ============================================================================
+// Group 11: Scrollback resize tracking contiguity (#18)
+// ============================================================================
+
+// #18: commit_resize shrink path unconditionally extends tracked range across
+// non-contiguous resize batches. When normal pushes occur between two shrinks,
+// push_track_count overcounts. On subsequent grow, wrong lines are erased.
+TEST(regression_scrollback_resize_contiguity)
+{
+    Scrollback::Impl impl;
+    impl.capacity = 100;
+
+    // Start with 3 lines
+    impl.push_line(make_row("LINE1", 10), false);
+    impl.push_line(make_row("LINE2", 10), false);
+    impl.push_line(make_row("LINE3", 10), false);
+    ASSERT_EQ(impl.lines.size(), 3);
+
+    // First shrink: pushes 1 line (simulating screen pushing to scrollback)
+    impl.begin_resize();
+    impl.push_line(make_row("SHRK1", 10), false);
+    impl.commit_resize(5, 4, 10, 10);  // shrink by 1 row
+    ASSERT_EQ(impl.push_track_count, 1);
+    ASSERT_EQ(impl.lines.size(), 4);
+
+    // Normal push between resizes — breaks contiguity
+    impl.push_line(make_row("NORM1", 10), false);
+    ASSERT_EQ(impl.lines.size(), 5);
+
+    // Second shrink: pushes 1 more line
+    impl.begin_resize();
+    impl.push_line(make_row("SHRK2", 10), false);
+    impl.commit_resize(4, 3, 10, 10);  // shrink by 1 row
+
+    // Bug: push_track_count = 1 + 1 = 2, spanning across NORM1.
+    // Fix: contiguity broken → reset, push_track_count = 1 (only SHRK2).
+    ASSERT_EQ(impl.push_track_count, 1);
+    ASSERT_EQ(impl.lines.size(), 6);
+
+    // Grow: should only erase SHRK2, not NORM1
+    impl.begin_resize();
+    impl.commit_resize(3, 4, 10, 10);  // grow by 1 row
+
+    ASSERT_EQ(impl.lines.size(), 5);
+
+    // NORM1 must survive — it's real content, not a resize artifact
+    bool found_norm = false;
+    for(const auto& line : impl.lines) {
+        if(line.cells.size() >= 4 &&
+           line.cells[0].chars[0] == 'N' &&
+           line.cells[1].chars[0] == 'O' &&
+           line.cells[2].chars[0] == 'R' &&
+           line.cells[3].chars[0] == 'M') {
+            found_norm = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(found_norm);
+}
+
+// ============================================================================
+// Group 12: Constructor validation (#19)
+// ============================================================================
+
+// #19: Constructor accepts 0 or negative rows/cols without validation. With
+// rows=0, any character output crashes via OOB getcell.
+TEST(regression_constructor_zero_dimensions)
+{
+    // These should not crash — dimensions clamped to 1
+    Terminal vt0(0, 0);
+    ASSERT_TRUE(vt0.rows() >= 1);
+    ASSERT_TRUE(vt0.cols() >= 1);
+
+    Terminal vtn(-5, -10);
+    ASSERT_TRUE(vtn.rows() >= 1);
+    ASSERT_TRUE(vtn.cols() >= 1);
+
+    // Verify it's functional — can write without crashing
+    State& state = vt0.state();
+    state.reset(true);
+    push(vt0, "A");
+}
+
+// ============================================================================
+// Group 13: clamp doublewidth row (#20)
+// ============================================================================
+
+// #20: std::clamp(pos.col, 0, this_row_width()-1) UB when cols=1 and row is
+// doublewidth. this_row_width() = cols/2 = 0, so hi = -1 < lo = 0.
+TEST(regression_clamp_doublewidth_narrow)
+{
+    Terminal vt(5, 2);
+    vt.set_utf8(false);
+    State& state = vt.state();
+    state.set_callbacks(state_cbs);
+    state.reset(true);
+
+    // Set row 0 to double-width (DECDWL). With cols=2, this_row_width()=1.
+    push(vt, "\e#6");
+
+    // Cursor should be valid
+    Pos pos = state.cursor_pos();
+    ASSERT_TRUE(pos.col >= 0);
+    ASSERT_TRUE(pos.col < vt.cols());
+
+    // Now try with cols=1 — shrink the terminal
+    vt.set_size(5, 1);
+
+    // Set row 0 to double-width again. this_row_width() = 1/2 = 0.
+    push(vt, "\e#6");
+
+    // Any CSI that triggers cursor clamping — e.g. CUP (cursor position)
+    push(vt, "\e[1;1H");
+
+    // Must not crash. Cursor should be valid.
+    pos = state.cursor_pos();
+    ASSERT_TRUE(pos.row >= 0);
+    ASSERT_TRUE(pos.row < vt.rows());
+    ASSERT_TRUE(pos.col >= 0);
+    ASSERT_TRUE(pos.col < vt.cols());
+
+    // Write a character to exercise the doublewidth row logic
+    push(vt, "X");
+
+    pos = state.cursor_pos();
+    ASSERT_TRUE(pos.row >= 0);
+    ASSERT_TRUE(pos.col >= 0);
 }

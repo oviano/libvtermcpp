@@ -140,8 +140,11 @@ void Scrollback::Impl::commit_resize(int32_t old_rows, int32_t new_rows,
 
         if(new_rows < old_rows && sb_after > sb_before) {
             // Shrink: track pushed lines
-            if(push_track_count == 0)
+            // Reset if normal pushes between resizes broke contiguity
+            if(push_track_count == 0 || push_track_start + push_track_count != sb_before) {
                 push_track_start = sb_before;
+                push_track_count = 0;
+            }
             push_track_count += (sb_after - sb_before);
         }
         else if(new_rows > old_rows && push_track_count > 0) {

@@ -48,8 +48,13 @@ struct UTF8Encoding : EncodingInstance {
         for(; ipos < input.size() && opos < cplen; ipos++) {
             uint8_t c = input[ipos];
 
-            if(c < decode_c0_end) // C0
+            if(c < decode_c0_end) { // C0
+                if(bytes_remaining != 0) {
+                    output[opos++] = unicode_invalid;
+                    bytes_remaining = 0;
+                }
                 return {opos, ipos};
+            }
 
             else if(c >= decode_c0_end && c < decode_ascii_end) {
                 if(bytes_remaining != 0) {
@@ -62,8 +67,13 @@ struct UTF8Encoding : EncodingInstance {
                 bytes_remaining = 0;
             }
 
-            else if(c == decode_ascii_end) // DEL
+            else if(c == decode_ascii_end) { // DEL
+                if(bytes_remaining != 0) {
+                    output[opos++] = unicode_invalid;
+                    bytes_remaining = 0;
+                }
                 return {opos, ipos};
+            }
 
             else if(c >= decode_continuation_start && c < decode_continuation_end) {
                 if(bytes_remaining == 0) {

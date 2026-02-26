@@ -1446,7 +1446,7 @@ bool State::Impl::on_csi(std::string_view leader, std::span<const int64_t> args,
     }
     else {
         pos.row = std::clamp(pos.row, 0, rows-1);
-        pos.col = std::clamp(pos.col, 0, this_row_width()-1);
+        pos.col = std::max(0, std::min(pos.col, this_row_width()-1));
     }
 
     updatecursor(oldpos, cancel_phantom);

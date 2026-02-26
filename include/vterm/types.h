@@ -142,8 +142,8 @@ struct Rect {
     constexpr void clip(const Rect& bounds) {
         start_row = std::max(start_row, bounds.start_row);
         start_col = std::max(start_col, bounds.start_col);
-        end_row   = std::clamp(end_row, start_row, bounds.end_row);
-        end_col   = std::clamp(end_col, start_col, bounds.end_col);
+        end_row   = std::max(start_row, std::min(end_row, bounds.end_row));
+        end_col   = std::max(start_col, std::min(end_col, bounds.end_col));
     }
 
     constexpr void move(int32_t row_delta, int32_t col_delta) {

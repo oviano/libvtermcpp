@@ -9,8 +9,8 @@ namespace vterm {
 Terminal::Terminal(int32_t rows, int32_t cols)
     : impl_(std::make_unique<Impl>())
 {
-    impl_->rows = rows;
-    impl_->cols = cols;
+    impl_->rows = std::max(rows, 1);
+    impl_->cols = std::max(cols, 1);
 
     impl_->parser.state = ParserState::Normal;
     impl_->parser.callbacks = nullptr;
