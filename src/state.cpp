@@ -1149,8 +1149,8 @@ bool State::Impl::on_csi(std::string_view leader, std::span<const int64_t> args,
             break;
         const int32_t rw = this_row_width();
         int32_t count = csi_arg_count(args[0]);
-        int32_t col = std::min(pos.col + count, rw);
-        while (pos.col < col) {
+        int32_t col = std::min(pos.col + count * combine_width, rw);
+        while (pos.col + combine_width <= col) {
             putglyph(make_span(combine_chars.data(), combine_count), combine_width, pos);
             pos.col += combine_width;
         }

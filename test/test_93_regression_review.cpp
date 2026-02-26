@@ -1,4 +1,4 @@
-// test_93_regression_review.cpp — regression tests for code review findings #1-14
+// test_93_regression_review.cpp — regression tests for code review findings #1-15
 //
 // Each test targets a specific bug found during review that was not caught by
 // the existing test suite. The bugs involve combinations of features that were
@@ -634,4 +634,79 @@ TEST(regression_wide_char_forward_reflow)
     ASSERT_TRUE(text.find("AAAA") != std::string::npos);
     ASSERT_TRUE(text.find("BBBB") != std::string::npos);
     ASSERT_TRUE(text.find("XXXX") != std::string::npos);
+}
+
+// ============================================================================
+// Group 8: REP (CSI b) wide char boundary (#15)
+// ============================================================================
+
+// #15a: REP count bug — column stop uses count instead of count * width,
+// producing too few repetitions for width-2 characters.
+TEST(regression_rep_wide_char_count)
+{
+    Terminal vt(25, 80);
+    vt.set_utf8(true);
+    State& state = vt.state();
+    state.set_callbacks(state_cbs);
+    state.reset(true);
+    callbacks_clear();
+
+    // Print U+FF10 (fullwidth digit zero, width=2) then REP 3.
+    // Should produce 4 glyphs total (1 original + 3 reps) at cols 0, 2, 4, 6.
+    // Bug: col stop = pos.col + count = 2 + 3 = 5, loop advances by 2,
+    // so only 1 rep (at col 2) before pos.col(4) >= 5. Fix: stop = 2 + 3*2 = 8.
+    push(vt, "\xEF\xBC\x90\x1b[3b");
+
+    ASSERT_EQ(g_cb.putglyph_count, 4);
+    ASSERT_EQ(g_cb.putglyph[0].col, 0);
+    ASSERT_EQ(g_cb.putglyph[0].width, 2);
+    ASSERT_EQ(g_cb.putglyph[1].col, 2);
+    ASSERT_EQ(g_cb.putglyph[1].width, 2);
+    ASSERT_EQ(g_cb.putglyph[2].col, 4);
+    ASSERT_EQ(g_cb.putglyph[2].width, 2);
+    ASSERT_EQ(g_cb.putglyph[3].col, 6);
+    ASSERT_EQ(g_cb.putglyph[3].width, 2);
+}
+
+// #15b: REP boundary bug — loop condition allows placing a width-2 char at
+// the last column where its continuation cell would be OOB.
+// Use a 10-col terminal. Cursor at col 8, REP a width-2 char. The char needs
+// cols 8-9 (fits). REP should not place another at col 10 (OOB). But without
+// the fix, the loop condition pos.col < col allows entry at col 10 if
+// col = min(8 + 2*1, 10) = 10 — except with the count fix, 1 rep means
+// col = min(8 + 1*2, 10) = 10, and pos.col(10) + 2 <= 10 is false, so
+// the loop correctly stops. To trigger the boundary bug independently, we need
+// the cursor at col 9 (last column) with a REP of a width-2 char.
+TEST(regression_rep_wide_char_boundary)
+{
+    Terminal vt(25, 10);
+    vt.set_utf8(true);
+    State& state = vt.state();
+    state.set_callbacks(state_cbs);
+    state.reset(true);
+    callbacks_clear();
+
+    // Move to col 7, print width-2 char (fills cols 7-8), cursor at col 9.
+    push(vt, "\x1b[1;8H");  // col 7 (0-indexed)
+    callbacks_clear();
+    push(vt, "\xEF\xBC\x90");  // width-2 at col 7, cursor now at col 9
+
+    ASSERT_EQ(g_cb.putglyph_count, 1);
+    ASSERT_EQ(g_cb.putglyph[0].col, 7);
+    ASSERT_EQ(g_cb.putglyph[0].width, 2);
+
+    Pos pos = state.cursor_pos();
+    ASSERT_EQ(pos.col, 9);
+
+    // REP 1 — width-2 char at col 9 needs col 10 for continuation, but
+    // row width is 10 (cols 0-9). Should NOT be placed.
+    callbacks_clear();
+    push(vt, "\x1b[b");
+
+    // No glyph should have been placed at col 9 with width 2
+    for(int32_t i = 0; i < g_cb.putglyph_count; i++) {
+        if(g_cb.putglyph[i].width == 2) {
+            ASSERT_TRUE(g_cb.putglyph[i].col + 2 <= 10);
+        }
+    }
 }
