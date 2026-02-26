@@ -5,18 +5,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(vtermcpp STATIC
-    src/terminal.cpp
-    src/parser.cpp
-    src/unicode.cpp
-    src/encoding.cpp
-    src/pen.cpp
-    src/state.cpp
-    src/screen.cpp
-    src/scrollback.cpp
-    src/keyboard.cpp
-    src/mouse.cpp
-)
+include(sources.cmake)
+list(TRANSFORM LIBVTERMCPP_SOURCES PREPEND "src/")
+
+add_library(vtermcpp STATIC ${LIBVTERMCPP_SOURCES})
 
 target_include_directories(vtermcpp
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include

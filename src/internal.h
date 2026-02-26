@@ -382,6 +382,7 @@ struct State::Impl {
     void request_version_string();
     void osc_selection(StringFragment frag);
     void request_status_string(StringFragment frag);
+    void init_encodings();
 
     void output_mouse(int32_t code, bool pressed, int32_t modifiers, int32_t col, int32_t row);
 };
@@ -610,24 +611,9 @@ inline constexpr auto unicode_fullwidth = std::to_array<UnicodeInterval>({
         return 0;
     if(ucs < c0_end || (ucs >= ctrl_del && ucs < c1_end))
         return -1;
-
     if(unicode_bisearch(ucs, unicode_combining))
         return 0;
-
-    return 1 +
-        (ucs >= 0x1100 &&
-         (ucs <= 0x115f ||
-          ucs == 0x2329 || ucs == 0x232a ||
-          (ucs >= 0x2e80 && ucs <= 0xa4cf &&
-           ucs != 0x303f) ||
-          (ucs >= 0xac00 && ucs <= 0xd7a3) ||
-          (ucs >= 0xf900 && ucs <= 0xfaff) ||
-          (ucs >= 0xfe10 && ucs <= 0xfe19) ||
-          (ucs >= 0xfe30 && ucs <= 0xfe6f) ||
-          (ucs >= 0xff00 && ucs <= 0xff60) ||
-          (ucs >= 0xffe0 && ucs <= 0xffe6) ||
-          (ucs >= 0x2'0000 && ucs <= 0x2'FFFD) ||
-          (ucs >= 0x3'0000 && ucs <= 0x3'FFFD)));
+    return 1;
 }
 
 [[nodiscard]] constexpr int32_t unicode_width(uint32_t codepoint) {

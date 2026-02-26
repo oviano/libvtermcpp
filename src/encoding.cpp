@@ -144,31 +144,6 @@ struct UTF8Encoding : EncodingInstance {
     }
 };
 
-// --- US-ASCII encoding ---
-
-struct USASCIIEncoding : EncodingInstance {
-    DecodeResult decode(std::span<uint32_t> output, std::span<const char> input) override
-    {
-        if(input.empty())
-            return {0, 0};
-
-        size_t ipos = 0;
-        int32_t opos = 0;
-        int32_t cplen = static_cast<int32_t>(output.size());
-        uint8_t is_gr = static_cast<uint8_t>(input[ipos] & high_bit);
-
-        for(; ipos < input.size() && opos < cplen; ipos++) {
-            uint8_t c = input[ipos] ^ is_gr;
-
-            if(c < decode_c0_end || c == decode_ascii_end || c >= decode_continuation_start)
-                return {opos, ipos};
-
-            output[opos++] = c;
-        }
-        return {opos, ipos};
-    }
-};
-
 // --- Table-based encoding ---
 
 struct TableEncoding : EncodingInstance {
@@ -222,6 +197,8 @@ constexpr auto uk_chars = [] {
     return t;
 }();
 
+constexpr std::array<uint32_t, 128> ascii_chars{};
+
 } // anonymous namespace
 
 // --- Factory ---
@@ -234,7 +211,7 @@ constexpr auto uk_chars = [] {
         switch(designation) {
         case '0': return std::make_unique<TableEncoding>(dec_drawing_chars);
         case 'A': return std::make_unique<TableEncoding>(uk_chars);
-        case 'B': return std::make_unique<USASCIIEncoding>();
+        case 'B': return std::make_unique<TableEncoding>(ascii_chars);
         }
     }
 

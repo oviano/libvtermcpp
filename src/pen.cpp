@@ -305,42 +305,37 @@ void State::Impl::setpen(std::span<const int64_t> args) {
             break;
 
         case 30: case 31: case 32: case 33:
-        case 34: case 35: case 36: case 37: {
-            int64_t idx = arg - 30;
-            if(pen.bold && bold_is_highbright)
+        case 34: case 35: case 36: case 37:
+        case 40: case 41: case 42: case 43:
+        case 44: case 45: case 46: case 47: {
+            bool is_bg = (arg >= 40);
+            int64_t idx = arg - (is_bg ? 40 : 30);
+            if(!is_bg && pen.bold && bold_is_highbright)
                 idx += palette_normal_count;
-            set_pen_col_ansi(Attr::Foreground, idx);
+            set_pen_col_ansi(is_bg ? Attr::Background : Attr::Foreground, idx);
             break;
         }
 
         case 38:
+        case 48: {
             if(argcount - argi < 2)
                 return;
-            argi += 1 + lookup_colour(csi_arg(args[argi+1]), args.subspan(argi+2), pen.fg);
-            setpenattr_col(Attr::Foreground, pen.fg);
+            bool is_bg = (arg == 48);
+            Color& colref = is_bg ? pen.bg : pen.fg;
+            Attr attr = is_bg ? Attr::Background : Attr::Foreground;
+            argi += 1 + lookup_colour(csi_arg(args[argi+1]), args.subspan(argi+2), colref);
+            setpenattr_col(attr, colref);
             break;
+        }
 
         case 39:
-            pen.fg = default_fg;
-            setpenattr_col(Attr::Foreground, pen.fg);
+        case 49: {
+            bool is_bg = (arg == 49);
+            Color& colref = is_bg ? pen.bg : pen.fg;
+            colref = is_bg ? default_bg : default_fg;
+            setpenattr_col(is_bg ? Attr::Background : Attr::Foreground, colref);
             break;
-
-        case 40: case 41: case 42: case 43:
-        case 44: case 45: case 46: case 47:
-            set_pen_col_ansi(Attr::Background, arg - 40);
-            break;
-
-        case 48:
-            if(argcount - argi < 2)
-                return;
-            argi += 1 + lookup_colour(csi_arg(args[argi+1]), args.subspan(argi+2), pen.bg);
-            setpenattr_col(Attr::Background, pen.bg);
-            break;
-
-        case 49:
-            pen.bg = default_bg;
-            setpenattr_col(Attr::Background, pen.bg);
-            break;
+        }
 
         case 73: case 74: case 75:
             pen.small = (arg != 75);
@@ -354,13 +349,13 @@ void State::Impl::setpen(std::span<const int64_t> args) {
 
         case 90: case 91: case 92: case 93:
         case 94: case 95: case 96: case 97:
-            set_pen_col_ansi(Attr::Foreground, arg - 90 + palette_normal_count);
-            break;
-
         case 100: case 101: case 102: case 103:
-        case 104: case 105: case 106: case 107:
-            set_pen_col_ansi(Attr::Background, arg - 100 + palette_normal_count);
+        case 104: case 105: case 106: case 107: {
+            bool is_bg = (arg >= 100);
+            set_pen_col_ansi(is_bg ? Attr::Background : Attr::Foreground,
+                arg - (is_bg ? 100 : 90) + palette_normal_count);
             break;
+        }
 
         default:
             DEBUG_LOG("libvterm: Unhandled CSI SGR {}\n", arg);

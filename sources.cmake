@@ -1,0 +1,11 @@
+set(LIBVTERMCPP_SOURCES
+    terminal.cpp
+    parser.cpp
+    encoding.cpp
+    pen.cpp
+    state.cpp
+    screen.cpp
+    scrollback.cpp
+    keyboard.cpp
+    mouse.cpp
+)

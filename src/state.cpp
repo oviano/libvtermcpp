@@ -2001,7 +2001,11 @@ State::Impl::Impl(Terminal::Impl& vt_ref)
     encoding_utf8 = create_encoding(EncodingType::UTF8, 'u');
     encoding_utf8->init();
 
-    // Initialize character set encoding slots so on_text is safe before reset()
+    init_encodings();
+}
+
+void State::Impl::init_encodings()
+{
     EncodingType default_type = vt.mode.utf8 ? EncodingType::UTF8 : EncodingType::Single94;
     char default_desig = vt.mode.utf8 ? 'u' : 'B';
     for(size_t i = 0; i < encoding.size(); i++) {
@@ -2069,13 +2073,7 @@ void State::Impl::reset(bool hard)
 
     resetpen();
 
-    EncodingType default_type = vt.mode.utf8 ? EncodingType::UTF8 : EncodingType::Single94;
-    char default_desig = vt.mode.utf8 ? 'u' : 'B';
-
-    for(size_t i = 0; i < encoding.size(); i++) {
-        encoding[i] = create_encoding(default_type, default_desig);
-        encoding[i]->init();
-    }
+    init_encodings();
 
     gl_set = 0;
     gr_set = 1;
