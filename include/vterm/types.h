@@ -192,11 +192,12 @@ union Color {
     }
 
     constexpr bool operator==(const Color& other) const noexcept {
-        if(is_indexed() && other.is_indexed())
+        if(type != other.type) return false;
+        if(is_indexed())
             return indexed.idx == other.indexed.idx;
-        if(is_rgb() && other.is_rgb())
+        if(is_rgb())
             return rgb.red == other.rgb.red && rgb.green == other.rgb.green && rgb.blue == other.rgb.blue;
-        return false;
+        return true;
     }
 };
 

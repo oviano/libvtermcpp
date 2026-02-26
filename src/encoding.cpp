@@ -136,6 +136,7 @@ struct UTF8Encoding : EncodingInstance {
             }
 
             else {
+                bytes_remaining = 0;
                 output[opos++] = unicode_invalid;
             }
         }

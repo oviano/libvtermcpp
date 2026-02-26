@@ -1,4 +1,4 @@
-// test_93_regression_review.cpp — regression tests for code review findings #1-21
+// test_93_regression_review.cpp — regression tests for code review findings #1-24
 //
 // Each test targets a specific bug found during review that was not caught by
 // the existing test suite. The bugs involve combinations of features that were
@@ -966,4 +966,87 @@ TEST(regression_decslrm_left_exceeds_cols)
     // Clean up modes
     push(vt, "\e[?6l");
     push(vt, "\e[?69l");
+}
+
+// ============================================================================
+// Group 15: Color equality ignores default flags (#22)
+// ============================================================================
+
+// #22: Color::operator== uses is_rgb() which masks only bit 0 of the type byte.
+// default_fg (type=0x02) passes is_rgb() and compares equal to explicit RGB(0,0,0)
+// (type=0x00) since both have zeroed RGB bytes.
+TEST(regression_color_default_fg_neq_rgb_black)
+{
+    // default_fg: type=0x02, rgb bytes all 0
+    Color default_fg{};
+    default_fg.type = color_type::default_fg;
+
+    // explicit RGB(0,0,0): type=0x00, rgb bytes all 0
+    Color black = Color::from_rgb(0, 0, 0);
+
+    // These must NOT be equal — one is "use terminal default", the other is
+    // explicitly black. Bug: is_rgb() true for both → compares RGB bytes → equal.
+    ASSERT_TRUE(!(default_fg == black));
+}
+
+// #22 variant: default_bg vs RGB(0,0,0)
+TEST(regression_color_default_bg_neq_rgb_black)
+{
+    Color default_bg{};
+    default_bg.type = color_type::default_bg;
+
+    Color black = Color::from_rgb(0, 0, 0);
+    ASSERT_TRUE(!(default_bg == black));
+}
+
+// ============================================================================
+// Group 16: UTF-8 invalid byte stale state (#23)
+// ============================================================================
+
+// #23: Invalid bytes (0xFE, 0xFF) don't reset bytes_remaining when interrupting
+// a multi-byte sequence. Same class as #17 but different code path.
+TEST(regression_utf8_decoder_invalid_byte_stale_state)
+{
+    auto ei = create_encoding(EncodingType::UTF8, 'u');
+    ei->init();
+
+    std::array<uint32_t, 4> cp{};
+
+    // Start a 3-byte sequence: \xE4 expects 2 continuation bytes
+    auto r = ei->decode(cp, std::span{"\xE4", 1});
+    ASSERT_EQ(r.codepoints_produced, 0);  // waiting for continuations
+
+    // Send invalid byte 0xFF which should interrupt the sequence
+    r = ei->decode(cp, std::span{"\xFF", 1});
+    ASSERT_EQ(r.codepoints_produced, 1);
+    ASSERT_EQ(cp[0], 0xFFFD);  // replacement for invalid byte
+
+    // Now send a valid ASCII char — should decode normally, not as continuation
+    // Bug: bytes_remaining still 2 → 'A' treated as continuation byte
+    r = ei->decode(cp, std::span{"A", 1});
+    ASSERT_EQ(r.codepoints_produced, 1);
+    ASSERT_EQ(cp[0], static_cast<uint32_t>('A'));
+}
+
+// ============================================================================
+// Group 17: State constructor null encoding (#24)
+// ============================================================================
+
+// #24: State constructor doesn't initialize encoding[0..3]. write() before
+// reset() dereferences null encoding[gl_set] in on_text().
+TEST(regression_state_write_before_reset)
+{
+    Terminal vt(25, 80);
+    vt.set_utf8(true);
+
+    // Obtain state to install parser callbacks, but do NOT call reset().
+    // This is the dangerous window — encoding[] slots are null without the fix.
+    (void)vt.state();
+
+    // write() routes through parser → on_text() → encoding[gl_set]->decode()
+    // Bug: null dereference. Fix: constructor initializes encoding[].
+    push(vt, "Hello");
+
+    // If we get here, no crash occurred
+    ASSERT_TRUE(true);
 }

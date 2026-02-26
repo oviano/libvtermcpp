@@ -2000,6 +2000,14 @@ State::Impl::Impl(Terminal::Impl& vt_ref)
     lineinfo_bufidx = bufidx_primary;
     encoding_utf8 = create_encoding(EncodingType::UTF8, 'u');
     encoding_utf8->init();
+
+    // Initialize character set encoding slots so on_text is safe before reset()
+    EncodingType default_type = vt.mode.utf8 ? EncodingType::UTF8 : EncodingType::Single94;
+    char default_desig = vt.mode.utf8 ? 'u' : 'B';
+    for(size_t i = 0; i < encoding.size(); i++) {
+        encoding[i] = create_encoding(default_type, default_desig);
+        encoding[i]->init();
+    }
 }
 
 // ---- State::Impl destructor ----
