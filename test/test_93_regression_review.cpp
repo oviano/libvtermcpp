@@ -1,4 +1,4 @@
-// test_93_regression_review.cpp — regression tests for code review findings #1-12
+// test_93_regression_review.cpp — regression tests for code review findings #1-14
 //
 // Each test targets a specific bug found during review that was not caught by
 // the existing test suite. The bugs involve combinations of features that were
@@ -557,4 +557,81 @@ TEST(regression_scrollback_evict_resize_tracking)
 
     ASSERT_EQ(impl.push_track_count, 0);
     ASSERT_EQ(impl.push_track_start, 0);
+}
+
+// ============================================================================
+// Group 6: UTF-8 decoder duplicate replacement char (#13)
+// ============================================================================
+
+// #13: UTF-8 decoder emits a duplicate U+FFFD when a multi-byte sequence is
+// interrupted by an ASCII byte and the output buffer is exactly full after the
+// first replacement char. The bug: bytes_remaining isn't reset before the early
+// return, so the next decode call re-enters the incomplete-sequence path for
+// the same byte.
+TEST(regression_utf8_decoder_duplicate_replacement)
+{
+    auto ei = create_encoding(EncodingType::UTF8, 'u');
+    ei->init();
+
+    // Start a 2-byte sequence: \xC2 expects one continuation byte
+    std::array<uint32_t, 1> cp{};
+    auto r = ei->decode(cp, std::span{"\xC2", 1});
+    ASSERT_EQ(r.codepoints_produced, 0);  // waiting for continuation
+
+    // Send ASCII 'A' which interrupts the sequence. Output buffer has room
+    // for 1 codepoint — the replacement char fills it, early return.
+    r = ei->decode(cp, std::span{"A", 1});
+    ASSERT_EQ(r.codepoints_produced, 1);
+    ASSERT_EQ(cp[0], 0xFFFD);  // replacement for interrupted sequence
+    ASSERT_EQ(r.bytes_consumed, 0);  // 'A' not consumed yet (buffer was full)
+
+    // Decode again — should get 'A', not another replacement char.
+    // Bug: bytes_remaining still nonzero → emits second U+FFFD.
+    r = ei->decode(cp, std::span{"A", 1});
+    ASSERT_EQ(r.codepoints_produced, 1);
+    ASSERT_EQ(cp[0], static_cast<uint32_t>('A'));
+}
+
+// ============================================================================
+// Group 7: Forward reflow wide char split (#14)
+// ============================================================================
+
+// #14: The forward reflow direction (old screen buffer → new buffer) splits
+// double-width characters at row boundaries, same bug class as #10/#11 but in
+// the main copy loop rather than the scrollback backfill path. Triggered when
+// on-screen content (not scrollback) is reflowed to a narrower width.
+//
+// Setup: content stays on screen (no scrollback pushes). A CJK char at col 4
+// of a 10-col row maps to col 4 (last column) in a 5-col reflow.
+TEST(regression_wide_char_forward_reflow)
+{
+    Terminal vt(25, 80);
+    vt.set_utf8(true);
+    State& state = vt.state();
+    state.set_callbacks(state_cbs_no_scrollrect);
+    state.reset(true);
+    Screen& screen = vt.screen();
+    screen.enable_reflow(true);
+    // No scrollback — content stays on screen through the forward path
+    vt.set_size(3, 10);
+    screen.reset(true);
+
+    // CJK at col 4: "AAAA一BBBB" (10 cells, wide char at col 4-5)
+    push(vt, "AAAA\xE4\xB8\x80""BBBB\r\n");
+    // Two more rows so the terminal is full
+    push(vt, "XXXX\r\n");
+    push(vt, "YY");
+
+    // All 3 rows are on screen. Resize to 5 cols — the forward reflow copies
+    // old buffer content into the new buffer. CJK at col 4 = last column.
+    vt.set_size(5, 5);
+
+    if(!assert_no_orphan_wide_chars(_test_failures, screen, vt.rows(), vt.cols()))
+        return;
+
+    // Verify content survived
+    std::string text = collect_screen_text(vt, screen);
+    ASSERT_TRUE(text.find("AAAA") != std::string::npos);
+    ASSERT_TRUE(text.find("BBBB") != std::string::npos);
+    ASSERT_TRUE(text.find("XXXX") != std::string::npos);
 }

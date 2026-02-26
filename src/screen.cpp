@@ -674,9 +674,32 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
         if(final_blank_row == (new_row + 1) && width == 0)
             final_blank_row = new_row;
 
-        int32_t new_height = reflow
-            ? (width ? (width + new_cols - 1) / new_cols : 1)
-            : 1;
+        int32_t new_height;
+        if(reflow && width > 0) {
+            // Simulate packing to account for double-width chars at row boundaries.
+            // InternalScreenCell has no .width field, so we detect wide chars by
+            // checking if the next cell is a widechar_continuation marker
+            // (cf. backfill path which uses ScreenCell.width == 2).
+            new_height = 0;
+            int32_t tw = 0;
+            while(tw < width) {
+                int32_t chunk = std::min(new_cols, width - tw);
+                if(chunk > 1 && chunk == new_cols && tw + chunk < width) {
+                    int32_t p1 = tw + chunk;
+                    int32_t p1_row = old_row_start + p1 / old_cols;
+                    int32_t p1_col = p1 % old_cols;
+                    if(p1_row <= old_row_end &&
+                       old_buffer[p1_row * old_cols + p1_col].chars[0] == widechar_continuation) {
+                        chunk--;
+                    }
+                }
+                tw += chunk;
+                new_height++;
+            }
+        }
+        else {
+            new_height = 1;
+        }
 
         int32_t new_row_end   = new_row;
         int32_t new_row_start = new_row - new_height + 1;
@@ -739,6 +762,25 @@ void Screen::Impl::resize_buffer(int32_t bufidx, int32_t new_rows, int32_t new_c
             int32_t new_col = 0;
 
             while(count) {
+                // Don't split a double-width character across rows.
+                // InternalScreenCell has no .width field, so we detect wide chars
+                // by checking if the next cell is a widechar_continuation marker
+                // (cf. backfill path which uses ScreenCell.width == 2).
+                if(reflow && new_col == new_cols - 1 && new_cols > 1) {
+                    int32_t peek_col = old_col + 1;
+                    int32_t peek_row = old_row;
+                    if(peek_col >= old_cols) {
+                        peek_row++;
+                        peek_col = 0;
+                    }
+                    if(peek_row <= old_row_end &&
+                       old_buffer[peek_row * old_cols + peek_col].chars[0] == widechar_continuation) {
+                        clearcell(new_buffer[new_row * new_cols + new_col]);
+                        width += count;
+                        break;
+                    }
+                }
+
                 // TODO: Could batch-copy contiguous runs of cells instead of one-at-a-time
                 new_buffer[new_row * new_cols + new_col] = old_buffer[old_row * old_cols + old_col];
 

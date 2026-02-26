@@ -54,6 +54,7 @@ struct UTF8Encoding : EncodingInstance {
             else if(c >= decode_c0_end && c < decode_ascii_end) {
                 if(bytes_remaining != 0) {
                     output[opos++] = unicode_invalid;
+                    bytes_remaining = 0;
                     if(opos >= cplen)
                         return {opos, ipos};
                 }
