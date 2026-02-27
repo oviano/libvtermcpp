@@ -49,7 +49,7 @@ Scrollback is disabled by default (capacity=0). When disabled, the library behav
 
 ## Bug fixes over upstream libvterm
 
-Over 40 bugs were found and fixed — first in the C codebase before porting, then during the C++ port and subsequent code review. All fixes have corresponding regression tests.
+Over 40 bugs were found and fixed — first in the C codebase before porting, then during the C++ port and subsequent code review. AI-assisted analysis was used to systematically identify bugs, and all fixes have corresponding regression tests.
 
 ### Fixed in C before the port (25 bugs)
 
