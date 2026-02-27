@@ -47,6 +47,37 @@ for (size_t i = 0; i < sb.size(); i++) {
 
 Scrollback is disabled by default (capacity=0). When disabled, the library behaves exactly as before — scrollback is delegated entirely to the application via `ScreenCallbacks::on_sb_pushline`/`on_sb_popline`. When enabled, both the built-in storage and the callbacks fire, so applications can use the built-in storage while still observing scrollback events.
 
+## Bug fixes over upstream libvterm
+
+Over 40 bugs were found and fixed — first in the C codebase before porting, then during the C++ port and subsequent code review. All fixes have corresponding regression tests.
+
+### Fixed in C before the port (25 bugs)
+
+- **Resize buffer** — cursor corruption when reflow advanced past group boundary; infinite loop when scrollback cells had zero width; `old_row_start` going negative; cursor tracking missed the final row of a logical line; pushed spare lines from freed buffer instead of old buffer
+- **Scroll damage tracking** — off-by-one in damaged region adjustment during scroll
+- **Rect intersection** — used `>` instead of `>=` for half-open range comparison
+- **Parser** — CSI parameter overflow (no cap on accumulated value); CSI argument index overflow past `CSI_ARGS_MAX`; OSC command number overflow
+- **SGR pen attributes** — underline sub-parameter read without bounds check; SGR 38/48 colour commands off-by-one in minimum argument count; `CSI_ARG_HAS_MORE` loop could read past argument array
+- **Keyboard** — `keyboard_unichar` used `%c` format for characters above 0x7F instead of UTF-8 encoding
+- **UTF-8 decoder** — printable ASCII in mid-sequence didn't bounds-check output array
+- **Screen popline** — resize path didn't use `sb_popline4` (continuation-aware variant) when available
+
+### Fixed during C++ port and review (24 bugs)
+
+Each fix has a regression test in `test_92_regression.cpp` and `test_93_regression_review.cpp`.
+
+- **Wide character handling** — scrollback reflow, screen reflow, and resize could split double-width characters across row boundaries, producing corrupt cells
+- **REP (CSI b)** — repeat count used character count instead of column width, and the loop could place a width-2 character past the right margin
+- **UTF-8 decoder** — stale `bytes_remaining` state after C0 controls, DEL, or invalid bytes (0xFE/0xFF) interrupted multi-byte sequences; duplicate U+FFFD replacement characters on split sequences
+- **Scrollback resize tracking** — `enforce_capacity` eviction didn't update the resize tracking counter; `commit_resize` unconditionally extended tracked ranges across non-contiguous regions
+- **Scroll region** — `scrollregion_top` could exceed row count after vertical shrink; DECSLRM accepted left margin exceeding column count, causing undefined behaviour
+- **Rect clipping** — `std::clamp` produced inverted rectangles when coordinates fell entirely outside bounds
+- **Color comparison** — `operator==` only checked bit 0 of the type byte, making `default_fg` compare equal to `rgb(0,0,0)`
+- **Parser** — OSC split across buffer boundaries left stale state; `string_len` underflow when escape flag was set at end of buffer
+- **Constructor/initialisation** — zero or negative dimensions not validated; encoding array uninitialised before first `reset()`
+- **Cursor positioning** — cursor row could go negative after reflow-shrink pushed all content to scrollback
+- **Double-width row clamping** — UB when clamping cursor on a double-width row in a single-column terminal
+
 ## C++ features used
 
 - **C++20 required** (`std::span`, `std::format`, `std::string_view`, designated initialisers, `std::to_array`)
