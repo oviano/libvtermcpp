@@ -7,11 +7,26 @@ A C++20 terminal emulator library, ported from [libvterm](http://www.leonerd.org
 libvtermcpp retains libvterm's layered structure but uses C++ classes, RAII, `std::span`, `std::string_view`, `enum class`, and virtual callbacks instead of C function-pointer tables and manual memory management.
 
 ```
-                 Terminal
-                 /      \
-              State     Screen
-               |          |
-            Parser    ScreenCallbacks
+┌───────────────────────────────────────┐
+│              Terminal                 │
+│                                       │
+│  ┌───────────┐       ┌─────────────┐  │
+│  │   State   │       │   Screen    │  │
+│  │           │◄──────│             │  │
+│  │  cursor   │       │  cells      │  │
+│  │  pen      │       │  damage     │  │
+│  │  modes    │       │  reflow     │  │
+│  │  palette  │       │  altscreen  │  │
+│  └─────┬─────┘       └──────┬──────┘  │
+│        │                    │         │
+│  ┌─────┴─────┐       ┌──────┴──────┐  │
+│  │  Parser   │       │ Scrollback  │  │
+│  └───────────┘       └─────────────┘  │
+└───────────────────────────────────────┘
+        ▲                     │
+    write()              callbacks
+        │                     ▼
+   byte stream           user code
 ```
 
 **Terminal** is the top-level object. It owns a **State** (cursor position, pen attributes, mode flags, color palette) and a **Screen** (cell buffer, damage tracking, scrollback integration). The terminal's built-in parser decodes incoming byte streams into control sequences, which State interprets to update internal state. Screen observes State via internal callbacks and maintains the cell grid.
@@ -127,7 +142,7 @@ A static library (`libvtermcpp.a` / `vtermcpp.lib`). No shared library option is
 
 ## Testing
 
-The test suite contains 649 tests covering parser behaviour, state management, screen operations, scrollback storage/reflow, and full vttest sequences. Some were ported from upstream libvterm; the rest were written from the terminal specs. The scrollback stress tests use golden output files to verify deterministic behaviour across resize sequences.
+The test suite contains 675 tests covering parser behaviour, state management, screen operations, scrollback storage/reflow, and full vttest sequences. Some were ported from upstream libvterm; the rest were written from the terminal specs. The scrollback stress tests use golden output files to verify deterministic behaviour across resize sequences.
 
 ```bash
 # Standard build + test
@@ -612,7 +627,7 @@ libvtermcpp/
     terminal.cpp     Terminal construction, output, write
     parser.cpp       VT escape sequence parser
     encoding.cpp     Character set encodings (UTF-8, single-94)
-    unicode.cpp      Unicode width and combining character tables
+    fullwidth.inc    Unicode full-width character tables
     pen.cpp          Pen attribute handling (SGR)
     state.cpp        State machine (cursor, modes, CSI/OSC/DCS dispatch)
     screen.cpp       Screen buffer, damage tracking, resize/reflow
@@ -624,6 +639,6 @@ libvtermcpp/
     harness.h        Test helpers and assertion macros
     main.cpp         Test entry point
     golden/          Golden output files for scrollback stress tests
-    test_*.cpp       93 files, 649 tests
+    test_*.cpp       94 files, 675 tests
   CMakeLists.txt
 ```
